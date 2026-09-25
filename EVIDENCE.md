@@ -165,7 +165,25 @@ Backend (`backend/src/auth.mjs`, `ledger.mjs`, `server.mjs`) and frontend Live l
 | Frontend | Unit tests 6/6; production build; Playwright 9/9 including two new Live ledger journeys (sign-in error then success, approval sends the session CSRF token, Daml rejection shown; investor sees only own records, never requests the workflow, acknowledges once). Existing denied-access journey updated for the new sign-in guidance | PASS |
 | Honest labeling | Live ledger tab shows a `LOCALNET` strip ("Actions submit real Daml commands… No assets move") instead of the `DEMO` strip, and hides the demo-data PDF export | Visually checked at 1280×800 |
 
-Not yet verified: the authorized write paths against the real LocalNet (needs an accounts file with real hashes and the backend running next to LocalNet). Known limits: in-memory sessions; one shared ledger user can act for all configured parties, so backend checks are the party boundary until per-user ledger users exist; the operator account and one governance member map to the same sandbox party.
+LocalNet verification: see the next section. Known limits: in-memory sessions; one shared ledger user can act for all configured parties, so backend checks are the party boundary until per-user ledger users exist; the operator account and one governance member map to the same sandbox party.
+
+## Gate 8 on BitSafe LocalNet (2026-09-25)
+
+`infra/test-gate8-localnet.sh` runs the real backend (`backend/src`, node:22-alpine, loopback port 8787, `WRITES_ENABLED=true`) on the LocalNet VM and drives it over HTTP as seven signed-in users, the same calls the Live ledger tab makes. Accounts are throwaway: random passwords generated on the VM, never printed, deleted with the container at exit. Policy and batch setup use the operator runbook (direct Ledger API + DecMan); every Gate 8 action goes through the backend.
+
+| Check | Evidence (run `g8-1790355019`) | Result |
+| --- | --- | --- |
+| Sign-in | All seven accounts (operator, treasury, COO, compliance, two BitSafe members on nodes p1/p2, investor) signed in; wrong password → 401; backend health reported writes enabled and all three DecMan nodes up | PASS |
+| Requirements from the live policy | Staff `/api/workflow` showed the 40%-funded batch needing Treasury, Final sign-off and conditional Compliance (funded 4000 bps < 5000); investor → 403 | PASS |
+| Own-party approvals | Treasury approving as FinalSignoff → 403; approval without CSRF → 403; treasury approval with forged `actAs`/`reviewer` was created on-ledger as the treasury party (read back in its own records); COO approved | PASS |
+| Ledger rejects a short approval set after the BitSafe threshold | Operator proposed with 2 approvals; member-1 and member-2 confirmed from their own nodes; execute → 409 `Missing required approvals for role ComplianceReviewer`; no investor records created; proposal and confirmations cancelled | PASS |
+| Governed finalization | Compliance approved; batch status turned complete; operator re-proposed with 3 approvals; execute after one confirmation → 409 (below threshold); after two confirmations execute succeeded | PASS |
+| Investor outcome | Investor saw only 400 allocated / 600 outstanding; treasury acknowledging for the investor → 403; acknowledge and withdraw succeeded once; second acknowledge → 404 | PASS |
+| Sign-out | Logout then `/api/auth/me` → 401 | PASS |
+| Bug found by the live run | DecMan's `/contracts/query` on LocalNet returns only blobs (no decoded `payload`), so the staff batch list and per-batch approval checklist were empty; the unit-test mock had supplied a payload. Fixed: the backend reads batches and approvals as the governance party through the Ledger API (DecMan query kept as fallback) and normalizes Int/Time encodings; the mock now matches LocalNet. The updated test fails against the old server and passes with the fix (backend 14/14) | Fixed; verified by the passing run |
+| Cleanup | Backend container removed; accounts, passwords and env file deleted; uploaded files removed; VM stopped and verified `TERMINATED` | PASS |
+
+Leftovers: two earlier interrupted runs (`g8-1790354711`, `g8-1790354785`) left their FundPolicy, an unfinalized batch and their approvals on LocalNet (approvals expire after 30 minutes; their failed proposals were cancelled). Still unverified: per-user ledger credentials (one shared ledger user acts for all parties, so backend checks are the party boundary); the Live ledger UI against LocalNet in a browser (the run drove the same HTTP API, not the UI).
 
 ## UI/UX and design pass (2026-09-25, local)
 

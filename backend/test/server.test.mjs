@@ -89,19 +89,8 @@ function decman(node) {
       }] }));
     }
     if (url.pathname === "/contracts/query") {
-      const entity = url.searchParams.get("entity_name");
-      const payload = entity === "RedemptionBatch" ? {
-        batchId: "window-17", policyVersion: "policy-v3", proposer: OPERATOR, operator: OPERATOR,
-        fundReviewer: "fund-reviewer", treasuryReviewer: TREAS, totalRequested: 100, totalAllocated: 80,
-        recoveryDeadline: 1790009000000000,
-        rows: [{ requestId: "request-1", investor: INV_A, requestedUnits: 100, allocatedUnits: 80, secret: "must-not-leak" }],
-        secret: "must-not-leak",
-      } : {
-        reviewer: TREAS, role: "TreasuryReviewer",
-        target: { batchCid: "batch-1", batchId: "window-17", policyVersion: "policy-v3", secret: "must-not-leak" },
-        expiresAt: 1790009000000000, secret: "must-not-leak",
-      };
-      return res.end(JSON.stringify({ contracts: [{ contract_id: entity === "RedemptionBatch" ? "batch-1" : "approval-t", blob: "private-created-event-blob", payload }] }));
+      // LocalNet DecMan returns blobs without decoded payloads.
+      return res.end(JSON.stringify({ contracts: [{ contract_id: "decman-only", blob: "private-created-event-blob" }] }));
     }
     res.statusCode = 404;
     res.end(JSON.stringify({ error: "not found" }));
@@ -119,6 +108,13 @@ const fundPolicy = {
   conditional: [{ trigger: { tag: "FundedBelowBps", value: "5000" }, requirement: { role: "ComplianceReviewer", members: [party("compliance")], quorum: "1" } }],
 };
 const acs = {
+  [GOV]: [
+    { templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: { ...batch, recoveryDeadline: "2026-09-25T12:00:00Z", secret: "must-not-leak" } },
+    { templateId: `${PKG}:Alluvren.Redemption:RoleApproval`, contractId: "approval-t", createArgument: {
+      governanceParty: GOV, reviewer: TREAS, role: "TreasuryReviewer",
+      target: { batchCid: "batch-1", batchId: "window-17", policyVersion: "demo-fund@v1", secret: "must-not-leak" }, expiresAt: "2026-09-25T12:30:00Z",
+    } },
+  ],
   [OPERATOR]: [{ templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: batch }],
   [TREAS]: [
     { templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: batch },
@@ -300,7 +296,13 @@ test("workflow requires a staff session; investors are refused", async () => {
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.threshold, 2);
-  assert.equal(payload.activeContracts.redemptionBatches[0].data.batchId, "window-17");
+  const [listed] = payload.activeContracts.redemptionBatches;
+  assert.equal(listed.contractId, "batch-1");
+  assert.equal(listed.data.batchId, "window-17");
+  assert.equal(listed.data.totalRequested, 1000);
+  assert.equal(listed.data.rows[0].allocatedUnits, 400);
+  assert.equal(listed.data.recoveryDeadline, Date.parse("2026-09-25T12:00:00Z") * 1000);
+  assert.equal(payload.activeContracts.roleApprovals[0].data.expiresAt, Date.parse("2026-09-25T12:30:00Z") * 1000);
   const status = payload.batchStatus["batch-1"];
   assert.equal(status.fundedBps, 4000);
   assert.equal(status.fundingThresholdBps, 5000);

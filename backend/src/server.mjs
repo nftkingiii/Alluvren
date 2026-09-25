@@ -107,11 +107,13 @@ async function workflowSnapshot() {
     throw Object.assign(new Error("Governance party is not configured"), { status: 503 });
   }
   const party = encodeURIComponent(governancePartyId);
+  let view;
+  const governanceView = () => (view ??= ledger.activeContracts(governancePartyId));
   const [governance, audit, batches, approvals] = await Promise.all([
     upstream("p1", `/governance/confirmations?party_id=${party}&limit=25`),
     upstream("p1", `/governance/chain-audit?party_id=${party}&limit=25&refresh=true`),
-    queryContracts("RedemptionBatch"),
-    queryContracts("RoleApproval"),
+    queryContracts("RedemptionBatch", governanceView),
+    queryContracts("RoleApproval", governanceView),
   ]);
   const domainActions = Array.isArray(governance?.domain_actions) ? governance.domain_actions : [];
   const auditEntries = Array.isArray(audit?.entries) ? audit.entries : [];
@@ -158,8 +160,17 @@ async function workflowSnapshot() {
   };
 }
 
-async function queryContracts(entityName) {
+// Batches and approvals as the governance party sees them. The Ledger API
+// returns decoded arguments; DecMan's contract query only returns blobs on
+// LocalNet, so it is a fallback for deployments without a ledger token.
+async function queryContracts(entityName, governanceView) {
   if (!alluvrenPackageRef) return [];
+  if (ledger.configured) {
+    const contracts = await governanceView();
+    return contracts
+      .filter((contract) => templateName(contract.templateId) === entityName)
+      .map((contract) => ({ contractId: contract.contractId, data: projectContractPayload(entityName, contract.argument) }));
+  }
   const params = new URLSearchParams({
     party_id: governancePartyId,
     package_id: alluvrenPackageRef,
@@ -181,7 +192,18 @@ async function queryContracts(entityName) {
 function projectContractPayload(entityName, payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const text = (value) => typeof value === "string" && value.length <= 4096 ? value : null;
-  const integer = (value) => Number.isSafeInteger(value) ? value : null;
+  // The JSON Ledger API encodes Int as a string and Time as an ISO string.
+  const integer = (value) => {
+    const number = typeof value === "string" && /^-?\d{1,16}$/.test(value) ? Number(value) : value;
+    return Number.isSafeInteger(number) ? number : null;
+  };
+  const micros = (value) => {
+    if (typeof value === "string" && !/^-?\d+$/.test(value)) {
+      const ms = Date.parse(value);
+      return Number.isFinite(ms) ? ms * 1000 : null;
+    }
+    return integer(value);
+  };
 
   if (entityName === "RedemptionBatch") {
     if (typeof payload.batchId !== "string" || !Array.isArray(payload.rows)) return null;
@@ -200,7 +222,7 @@ function projectContractPayload(entityName, payload) {
       treasuryReviewer: text(payload.treasuryReviewer),
       totalRequested: integer(payload.totalRequested),
       totalAllocated: integer(payload.totalAllocated),
-      recoveryDeadline: integer(payload.recoveryDeadline),
+      recoveryDeadline: micros(payload.recoveryDeadline),
       rows,
     };
   }
@@ -215,7 +237,7 @@ function projectContractPayload(entityName, payload) {
         batchId: text(payload.target.batchId),
         policyVersion: text(payload.target.policyVersion),
       } : null,
-      expiresAt: integer(payload.expiresAt),
+      expiresAt: micros(payload.expiresAt),
     };
   }
   return null;

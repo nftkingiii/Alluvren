@@ -117,3 +117,80 @@ Required invariants: sum(allocation)=D; each allocation is in [0,request]; reque
 | P02 | Backend errors, exports, logs and aggregate responses do not leak investor rows |
 
 Daml Script authorization tests are not a substitute for separate authenticated Ledger API visibility tests. All local participants controlled by one developer prove mechanics, not organizational independence.
+
+## Policy-driven role governance (proposed next slice, 2026-09-25)
+
+Status: **design only, not implemented.** Supersedes the fixed two-reviewer rule for new batches; the shipped `alluvren-v1` 0.2.0 behavior stays valid for existing batches.
+
+### Why
+
+The v1 contracts hardcode one FundReviewer and one TreasuryReviewer per batch, with one approval each. The three user-reported interviews (Maya/COO, Daniel/Operations, Priya/Administrator; qualitative, not validated demand) describe five parties with distinct duties: COO final sign-off, Operations preparing the batch, Treasury confirming liquidity, Compliance clearing exceptions, and the Administrator's independent calculation. All three name the same re-review triggers: a change to liquidity, eligibility, requests, NAV or the governing rules. Their near-failures were all "approved one version, almost released another". The design below keeps Alluvren's core control (approvals bound to one exact batch) and makes *who must approve* a governed, versioned policy instead of code.
+
+### Principles
+
+- Exact-batch binding does not loosen. Flexibility comes from the policy, never from weaker approval targets.
+- The policy is ledger data, pinned by contract ID. Changing it is itself a BitSafe-governed action.
+- Required sign-off can depend on facts computed from the batch inside Daml, so a backend cannot downgrade the requirement.
+- Separation of duties is enforced at finalization, not assumed.
+
+### Contract model (proposed)
+
+| Item | Shape | Notes |
+| --- | --- | --- |
+| `ApprovalRole` | extend enum with `ComplianceReviewer`, `AdministratorCheck`, `FinalSignoff` | Adding constructors at the end is upgrade-compatible; existing `FundReviewer`/`TreasuryReviewer` keep their meaning |
+| `RoleRequirement` | `role : ApprovalRole`, `members : [Party]`, `quorum : Int` | Quorum N-of-M distinct members; `1 <= quorum <= length members`; members unique |
+| `Trigger` | `FundedBelowBps Int` · `InvestorShareAboveBps Int` · `ExceptionsPresent` | Evaluated from batch rows and totals in integer basis points; no Float |
+| `ConditionalRequirement` | `trigger : Trigger`, `requirement : RoleRequirement` | Added on top of base requirements when its trigger holds |
+| `FundPolicy` (template) | `governanceParty`, `operator`, `fundId`, `version : Int`, `base : [RoleRequirement]`, `conditional : [ConditionalRequirement]`, `approvalTtl : RelTime` | Signatory governanceParty; observers operator and all members. `FundPolicy_Supersede` is consuming and governance-controlled |
+| `UpdateFundPolicy` (template) | proposer, governanceParty, current policy CID, full replacement policy | Implements `GovernableAction`: after BitSafe threshold, supersedes the old policy and creates version + 1 |
+| `RedemptionBatch` | add `policyCid : Optional (ContractId FundPolicy)` and `exceptions : Optional [ExceptionNote]` at the end | Optional trailing fields keep the upgrade valid. `None` = legacy two-reviewer rule |
+| `RedemptionBatch_FinalizeWithPolicy` (new choice) | `approvalCids : [ContractId RoleApproval]` | The existing `RedemptionBatch_Finalize` signature is frozen by upgrade rules; it rejects batches that carry a policy |
+| `FinalizePolicyRedemption` (template) | batch CID, approval CID list, description | New `GovernableAction` proposal for policy batches; the existing `FinalizeRedemption` stays for legacy batches |
+
+### Finalization checks (policy batches)
+
+`RedemptionBatch_FinalizeWithPolicy` must, atomically:
+
+1. Fetch the pinned `policyCid`. If the policy was superseded (archived), fail: a rule change forces a new batch, matching the interviews' "new governing rule means new calculation and review".
+2. Compute required roles = base requirements plus every conditional requirement whose trigger holds for this batch.
+3. Consume each approval with the existing exact-target and expiry checks (batch CID, batch ID, policy version).
+4. For every required role: count **distinct** approvers who are listed members of that role and approved with that role; require count ≥ quorum.
+5. Separation of duties: no approver is the proposer or operator; no party approves under two roles in the same batch; **no approver appears as an investor in the batch rows** (conflict of interest).
+6. Reject surplus or duplicate approval CIDs rather than ignoring them, so the proposal content is exact.
+7. Create the investor entitlement and outstanding records exactly as 0.2.0 does.
+
+Legacy `RedemptionBatch_Finalize` also gains the conflict-of-interest check (reviewer must not be a batch investor). This is a body-only change and upgrade-compatible.
+
+### Governed policy change
+
+`UpdateFundPolicy` goes through the same DecMan/BitSafe path as `FinalizeRedemption`: proposal → member confirmations → threshold → execute. Execution checks that the replaced policy is still current (no concurrent update race) and that the new version equals old + 1. Batches frozen under the old policy cannot finalize afterward and must be recovered. This extends BitSafe from gating one decision to governing the decision rules themselves.
+
+### Demo path (the adverse state to show)
+
+Policy: base Treasury 1-of-2 + Operations-independent Administrator check 1-of-1 + COO final sign-off; conditional `FundedBelowBps 5000` adds Compliance 1-of-1. A batch funded at 40% is proposed with Treasury, Administrator and COO approvals, passes the BitSafe threshold, and is **rejected** for missing Compliance. After Compliance approves the same batch, a new proposal finalizes it. A policy update mid-window then blocks an in-flight batch until it is re-frozen.
+
+### Tests required
+
+| ID | Required result |
+| --- | --- |
+| P-01 | Policy validation: quorum bounds, unique members, non-empty base, governance/operator not members |
+| P-02 | Quorum: N-1 distinct members fail; N succeed; same member twice counts once |
+| P-03 | Non-member approval, wrong role label, and approver holding two roles all fail |
+| P-04 | Conflict of interest: approver who is a batch investor fails (policy and legacy paths) |
+| P-05 | Triggers: funded 49.99% vs 50.00% boundary; investor-share threshold; exceptions present/absent; triggers computed from rows, not caller input |
+| P-06 | Superseded policy blocks finalization; recovery still works |
+| P-07 | Governed `UpdateFundPolicy`: below threshold fails; stale/concurrent update fails; version increments by exactly one |
+| P-08 | Surplus or duplicate approval CIDs rejected; failed finalization leaves no investor records |
+| P-09 | Upgrade check passes against 0.2.0; legacy batches (`policyCid = None`) behave exactly as before |
+| P-10 | LocalNet: demo path above via DecMan, with evidence and cleanup |
+
+### Deferred (not in this slice)
+
+- Time-bound delegation (`RoleDelegation` with expiry and revocation) and emergency rotation through `UpdateFundPolicy`.
+- Explicit `Rejection` contracts with reason codes, and attestation references on approvals (e.g., liquidity statement ID), to make the audit trail explain decisions.
+- Eligibility snapshots and NAV inputs as ledger facts the triggers can read.
+
+### Dependencies and honesty boundary
+
+- Roles are only as strong as who controls the parties. Until Gate 8 maps authenticated users to parties, all roles are sandbox parties controlled by one developer; claim mechanics, not organizational independence.
+- The role list comes from three user-reported interviews; confirm the policy shape with those contacts before treating it as validated.

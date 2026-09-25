@@ -9,26 +9,12 @@
 # participant's JSON Ledger API. This proves the ledger's per-party projection;
 # it uses the shared harness user, so it is NOT a separate-credential test.
 set -Eeuo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/localnet-env.sh"
 
-BASE=http://127.0.0.1
-JSON_API=$BASE:2975
 PKG='#alluvren-v1'
-GOV='demo-party::1220ebce9d2445fcdc8f78c1f9993b9d4d1be362e32939eb6d6ab62f6c54048accea'
-P1='party-2db40dfe-79ad-4858-aa97-2daf52f8893e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-P2='party-39699690-05f3-49be-9279-942d59092179::12208876893b8cc00304d1aeee9cd6fffdbe5444c96837dea659999c257006ea7b45'
-OP='party-abc34a43-8b10-4fb5-8749-9c09c4b5151a::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-FUND='party-b33cd1e3-df3d-4c97-aa25-cf0c64a5f94e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TREAS='party-16f22a76-5c1f-4400-9ec1-9887b09c5db3::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-# Two existing participant-1 parties that hold no Alluvren role act as investors.
-INV_A='app_user_localnet-localparty-1::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-INV_B='party-b3866661-1596-4a92-bee0-2ce87a3cd002::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TOKEN=$(sed -n 's/^LOCALNET_CANTON_TOKEN="\(.*\)"$/\1/p' /home/chineduanimalu/decentralization-manager/hackathon/localnet.sh)
-[[ -n $TOKEN ]]
 
 RUN=gate7-$(date +%s)
-fail() { echo "FAIL: $*" >&2; exit 1; }
-say() { printf '\n== %s ==\n' "$*"; }
-new_id() { printf '%s-%s-%s' "$RUN" "$1" "$(date +%s%N)"; }
+new_id() { printf '%s-%s-%s' "$RUN" "$1" "$(uid)"; }
 ledger_submit() {
   local cmdid=$1 actors=$2 commands=$3 body
   body=$(jq -cn --arg id "$cmdid" --argjson actors "$actors" --argjson commands "$commands" \
@@ -41,7 +27,7 @@ ledger_try() {
   local cmdid=$1 actors=$2 commands=$3 body
   body=$(jq -cn --arg id "$cmdid" --argjson actors "$actors" --argjson commands "$commands" \
     '{commands:{userId:"ledger-api-user",commandId:$id,actAs:$actors,commands:$commands}}')
-  curl -sS -o /tmp/$RUN-last.json -w '%{http_code}' "$JSON_API/v2/commands/submit-and-wait-for-transaction" \
+  curl -sS -o "${TMPDIR:-/tmp}/$RUN-last.json" -w '%{http_code}' "$JSON_API/v2/commands/submit-and-wait-for-transaction" \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$body"
 }
 dm_post() {
@@ -96,7 +82,7 @@ if [[ ${1-} == cleanup ]]; then
 fi
 
 say "Create batch $RUN (A requests 600, B 300; 450 allocated)"
-EXP=$(date -u -d '+10 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
+EXP=$(iso_in 10)
 BATCH=$(jq -cn --arg gov "$GOV" --arg prop "$P1" --arg op "$OP" --arg fund "$FUND" --arg treas "$TREAS" \
   --arg a "$INV_A" --arg b "$INV_B" --arg id "$RUN" --arg dl "$EXP" '
   [{CreateCommand:{templateId:"#alluvren-v1:Alluvren.Redemption:RedemptionBatch",createArguments:{
@@ -194,4 +180,4 @@ echo 'PASS: no open entitlements or outstanding records remain; demo receipts re
 # is not used as evidence here. Execution is proven by the DecMan execute
 # response and the investor records it created on-ledger.
 echo "Alluvren Gate 7 LocalNet run passed. run=$RUN batch=$BATCH_CID proposal=$PROP_CID"
-rm -f /tmp/$RUN-last.json
+rm -f "${TMPDIR:-/tmp}/$RUN-last.json"

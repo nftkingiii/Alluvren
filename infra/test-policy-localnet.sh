@@ -9,27 +9,14 @@
 # Runs on the LocalNet VM as root. Uses sandbox parties controlled by one
 # developer: mechanics, not organizational independence.
 set -Eeuo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/localnet-env.sh"
 
-BASE=http://127.0.0.1
-JSON_API=$BASE:2975
-GOV='demo-party::1220ebce9d2445fcdc8f78c1f9993b9d4d1be362e32939eb6d6ab62f6c54048accea'
-P1='party-2db40dfe-79ad-4858-aa97-2daf52f8893e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-P2='party-39699690-05f3-49be-9279-942d59092179::12208876893b8cc00304d1aeee9cd6fffdbe5444c96837dea659999c257006ea7b45'
-OP='party-abc34a43-8b10-4fb5-8749-9c09c4b5151a::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TREAS='party-16f22a76-5c1f-4400-9ec1-9887b09c5db3::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-COO='party-b33cd1e3-df3d-4c97-aa25-cf0c64a5f94e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-COMP='party-b3866661-1596-4a92-bee0-2ce87a3cd002::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-INV='app_user_localnet-localparty-1::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TOKEN=$(sed -n 's/^LOCALNET_CANTON_TOKEN="\(.*\)"$/\1/p' /home/chineduanimalu/decentralization-manager/hackathon/localnet.sh)
-[[ -n $TOKEN ]]
 
 RUN=p10-$(date +%s)
 FUND_ID=$RUN
 T_REDEMPTION='#alluvren-v1:Alluvren.Redemption'
 T_CLAIMS='#alluvren-v1:Alluvren.Claims'
-fail() { echo "FAIL: $*" >&2; exit 1; }
-say() { printf '\n== %s ==\n' "$*"; }
-new_id() { printf '%s-%s-%s' "$RUN" "$1" "$(date +%s%N)"; }
+new_id() { printf '%s-%s-%s' "$RUN" "$1" "$(uid)"; }
 ledger_submit() {
   local body
   body=$(jq -cn --arg id "$1" --argjson actors "$2" --argjson commands "$3" \
@@ -116,7 +103,7 @@ make_batch() {
 }
 approve() {
   local batch=$1 id=$2 reviewer=$3 role=$4 exp cmd
-  exp=$(date -u -d '+15 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
+  exp=$(iso_in 15)
   cmd=$(jq -cn --arg gov "$GOV" --arg r "$reviewer" --arg role "$role" --arg b "$batch" --arg id "$id" --arg pv "$FUND_ID@v1" --arg exp "$exp" --arg tpl "$T_REDEMPTION:RoleApproval" \
     '[{CreateCommand:{templateId:$tpl,createArguments:{governanceParty:$gov,reviewer:$r,role:$role,target:{batchCid:$b,batchId:$id,policyVersion:$pv},expiresAt:$exp}}}]')
   ledger_submit "$(new_id approve)" "[\"$reviewer\"]" "$cmd" | created ':RoleApproval'
@@ -143,7 +130,7 @@ POLICY_V1=$(policy_cid 1)
 echo "PASS: FundPolicy v1 created behind the BitSafe threshold ($POLICY_V1)"
 
 say 'A 40%-funded batch needs Compliance'
-DL=$(date -u -d '+15 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
+DL=$(iso_in 15)
 B1=$(make_batch "$RUN-b1" "$POLICY_V1" "$DL")
 [[ -n $B1 ]] || fail 'batch not created'
 A_T=$(approve "$B1" "$RUN-b1" "$TREAS" TreasuryReviewer)
@@ -168,7 +155,8 @@ echo "$RECS"
 echo 'PASS: with Compliance, the governed finalization executed and created the investor records'
 
 say 'A governed policy update blocks a batch pinned to v1'
-DL2=$(date -u -d '+4 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
+DL2=$(iso_in 4)
+DL2_EPOCH=$(( $(date -u +%s) + 240 ))
 B2=$(make_batch "$RUN-b2" "$POLICY_V1" "$DL2")
 B2_T=$(approve "$B2" "$RUN-b2" "$TREAS" TreasuryReviewer)
 B2_F=$(approve "$B2" "$RUN-b2" "$COO" FinalSignoff)
@@ -196,7 +184,7 @@ for pair in "$TREAS|$B2_T" "$COO|$B2_F" "$COMP|$B2_C"; do
   ledger_submit "$(new_id revoke)" "[\"$party\"]" "$(jq -cn --arg c "$cid" --arg t "$T_REDEMPTION:RoleApproval" '[{ExerciseCommand:{templateId:$t,contractId:$c,choice:"RoleApproval_Revoke",choiceArgument:{}}}]')" >/dev/null
 done
 echo 'waiting for the blocked batch recovery deadline'
-while [[ $(date -u +%s) -le $(date -u -d "$DL2" +%s) ]]; do sleep 10; done
+while [[ $(date -u +%s) -le $DL2_EPOCH ]]; do sleep 10; done
 sleep 5
 ledger_submit "$(new_id recover)" "[\"$OP\"]" "$(jq -cn --arg c "$B2" --arg t "$T_REDEMPTION:RedemptionBatch" '[{ExerciseCommand:{templateId:$t,contractId:$c,choice:"RedemptionBatch_RecoverExpired",choiceArgument:{}}}]')" >/dev/null
 LEFT=$(for p in "$INV" "$OP" "$TREAS" "$COO" "$COMP" "$P1"; do active "$p"; done \

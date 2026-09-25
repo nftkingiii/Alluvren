@@ -2,20 +2,28 @@
 
 Alluvren is a private-fund redemption shortfall desk prototype. It models deterministic partial allocations against a specific batch version, requires separated fund and treasury review, and uses BitSafe Decentralization Manager governance for threshold-controlled finalization.
 
+## Reproduce it
+
+Judges and reviewers: follow [REPRODUCE.md](REPRODUCE.md). On a BitSafe LocalNet started with the DecMan hackathon kit, two commands set up Alluvren and run the demonstrations:
+
+```bash
+bash infra/setup-localnet.sh
+bash infra/demo-localnet.sh
+```
+
 ## Current state
 
-- The local BitSafe LocalNet Gate 6 end-to-end scenario passed: insufficient threshold, stale-batch rejection, reviewer-separation rejection, successful target-bound finalization, and replay rejection.
-- The Google Cloud test VM is stopped. Its LocalNet data was retained.
-- The frontend's default business desk is simulated browser state. The connect panel reads LocalNet state; the backend is read-only and blocks writes until authentication, party-role authorization, and transaction read-back are implemented.
-- No real cash/token settlement or independent-operator validation is implemented. Demo units are fixed 1:1 with zero fees.
-- `artifacts/alluvren-v1-0.1.0.dar` is the current LocalNet DAR. See `artifacts/SHA256SUMS.txt` and `EVIDENCE.md` for package identity and test evidence. It is not evidence of an upload to the shared HackCanton DevNet.
+- `alluvren-v1` 0.3.0: governed fund policies with role quorums, investor-private redemption records, and BitSafe-governed finalization (`artifacts/`, checksums in `artifacts/SHA256SUMS.txt`).
+- Verified on BitSafe LocalNet: threshold-bound finalization, policy governance, signed-in role-bound writes through the backend, and a hosting-node outage with recovery. Evidence and limits are in `EVIDENCE.md`.
+- The frontend has a Live ledger tab for signed-in users (LocalNet) and a clearly labelled simulated walkthrough.
+- No real cash or token settlement: investor receipts are demo acknowledgments; units are 1:1 with zero fees. All LocalNet nodes are run by one developer, so independent operation is not demonstrated.
 
 ## Repository map
 
 - `daml/`: Daml templates, tests, and design notes
-- `backend/`: read-only Node API and tests
+- `backend/`: Node API with sign-in and role-bound ledger writes, and tests
 - `frontend/`: React/Vite application, assets, and browser tests
-- `infra/`: LocalNet recovery and Gate 6 test scripts
+- `infra/`: LocalNet setup, demonstrations and VM recovery scripts
 - `artifacts/`: versioned DARs, checksums, and changelog
 - `BUILD_EXECUTION_PLAN.md`, `PROJECT_STATE.md`, `EVIDENCE.md`: current execution state and proof
 - `LUNA_HANDOFF.md`: historical integration handoff; verify against current state before relying on it

@@ -185,6 +185,19 @@ LocalNet verification: see the next section. Known limits: in-memory sessions; o
 
 Leftovers: two earlier interrupted runs (`g8-1790354711`, `g8-1790354785`) left their FundPolicy, an unfinalized batch and their approvals on LocalNet (approvals expire after 30 minutes; their failed proposals were cancelled). Still unverified: per-user ledger credentials (one shared ledger user acts for all parties, so backend checks are the party boundary); the Live ledger UI against LocalNet in a browser (the run drove the same HTTP API, not the UI).
 
+## Reproducible setup and one-command demos on BitSafe LocalNet (2026-09-25)
+
+`infra/localnet-env.sh` discovers every ID from the running LocalNet: the governance party (by `PARTY_PREFIX`, default `demo-party`), the GovernanceRules contract, the member hosted on each node (matched by participant namespace), and the business parties. `infra/setup-localnet.sh` checks the DAR checksum, distributes `alluvren-v1` 0.3.0 through DecMan (skipped if vetted), and allocates six named parties on node 2 (`alluvren-operator`, `-treasury`, `-coo`, `-compliance`, `-investor-a`, `-investor-b`). `infra/demo-localnet.sh` runs the demonstrations. The judge's guide is `REPRODUCE.md`. The scripts no longer contain party IDs or VM paths; dates work with GNU and BSD `date`; the Gate 8 backend runs from the repo (host Node 20+, otherwise `node:22-alpine`).
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Discovery | On the VM, setup found the same governance party, rules contract and per-node members previously hardcoded | PASS |
+| Setup | Checksum matched; package already vetted on all three nodes (distribution skipped); six parties allocated and granted to `ledger-api-user`; a second run reported all six as existing | PASS |
+| All demonstrations with the generic scripts | `demo-localnet.sh --all` against the new `alluvren-*` parties: shared control/policy (`p10-1790356925`), signed-in app flow, node outage (node 1 ledger 3189 → 3232 after reconnect), legacy threshold/replay, and legacy investor privacy (`gate7-1790357484`) all passed; exit 0 | PASS |
+| Cleanup | Temporary files removed, no backend container left, three DecMan nodes healthy; VM stopped and verified `TERMINATED` | PASS |
+
+Not yet verified: a run from a freshly reset LocalNet (`reset.sh`, `up.sh`, `seed.sh`, first-time DAR distribution), a run on macOS or with host Node (the VM used the Docker fallback), and a run by someone other than the developer.
+
 ## Distributed hosting: node outage on BitSafe LocalNet (2026-09-25)
 
 `infra/test-outage-localnet.sh` takes a hosting node offline during real Alluvren governance. Topology: the governance party `demo-party::1220ebce…` is hosted with confirmation permission on three participants, and GovernanceRules has three members with threshold 2.

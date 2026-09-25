@@ -1,22 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/localnet-env.sh"
 
-BASE=http://127.0.0.1
-JSON_API=$BASE:2975
 PACKAGE='#alluvren-v1:Alluvren.Redemption'
-GOV='demo-party::1220ebce9d2445fcdc8f78c1f9993b9d4d1be362e32939eb6d6ab62f6c54048accea'
-P1='party-2db40dfe-79ad-4858-aa97-2daf52f8893e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-P2='party-39699690-05f3-49be-9279-942d59092179::12208876893b8cc00304d1aeee9cd6fffdbe5444c96837dea659999c257006ea7b45'
-P3='party-effd301f-97b6-4fac-80f5-11ae4af20db5::1220acd5e1461b1f326effb800029964017f636426a2f9de7e3cc3e299e8662d054e'
-OP='party-abc34a43-8b10-4fb5-8749-9c09c4b5151a::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-FUND='party-b33cd1e3-df3d-4c97-aa25-cf0c64a5f94e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TREAS='party-16f22a76-5c1f-4400-9ec1-9887b09c5db3::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TOKEN=$(sed -n 's/^LOCALNET_CANTON_TOKEN="\(.*\)"$/\1/p' /home/chineduanimalu/decentralization-manager/hackathon/localnet.sh)
-[[ -n $TOKEN ]]
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
-say() { printf '\n== %s ==\n' "$*"; }
-new_id() { printf 'gate6-%s-%s' "$1" "$(date +%s%N)"; }
+new_id() { printf 'gate6-%s-%s' "$1" "$(uid)"; }
 ledger_submit() {
   local cmdid=$1 actors=$2 commands=$3 body
   body=$(jq -cn --arg id "$cmdid" --argjson actors "$actors" --argjson commands "$commands" \
@@ -48,9 +36,9 @@ execute() {
   dm_post "$port" /governance/execute "$body"
 }
 
-DEADLINE_SOURCE=$(date -u -d '+3 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
-DEADLINE_TARGET=$(date -u -d '+8 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
-EXPIRES=$(date -u -d '+8 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
+DEADLINE_SOURCE=$(iso_in 3)
+DEADLINE_TARGET=$(iso_in 8)
+EXPIRES=$(iso_in 8)
 say 'Create short-lived source and target batches'
 BATCHES=$(jq -cn --arg gov "$GOV" --arg prop "$P1" --arg op "$OP" --arg fund "$FUND" --arg treas "$TREAS" \
   --arg ds "$DEADLINE_SOURCE" --arg dt "$DEADLINE_TARGET" '

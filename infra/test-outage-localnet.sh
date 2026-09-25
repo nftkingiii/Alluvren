@@ -17,33 +17,19 @@
 #   3. Recovery: node 1 reconnects and catches up on everything it missed; its
 #      member confirms the waiting proposal and executes it.
 # The EXIT trap always reconnects node 1 and restarts both DecMan nodes.
-# Runs on the LocalNet VM as root. All three nodes belong to one developer:
+# Needs infra/setup-localnet.sh first. On LocalNet all three nodes belong to one developer:
 # this shows hosting and threshold mechanics, not organizational independence.
 set -Eeuo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/localnet-env.sh"
 
-BASE=http://127.0.0.1
-JSON_API=$BASE:2975
 NODE1_JSON=$BASE:3975
-GOV='demo-party::1220ebce9d2445fcdc8f78c1f9993b9d4d1be362e32939eb6d6ab62f6c54048accea'
-P1='party-2db40dfe-79ad-4858-aa97-2daf52f8893e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-P2='party-39699690-05f3-49be-9279-942d59092179::12208876893b8cc00304d1aeee9cd6fffdbe5444c96837dea659999c257006ea7b45'
-P3='party-effd301f-97b6-4fac-80f5-11ae4af20db5::1220acd5e1461b1f326effb800029964017f636426a2f9de7e3cc3e299e8662d054e'
-OP='party-abc34a43-8b10-4fb5-8749-9c09c4b5151a::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TREAS='party-16f22a76-5c1f-4400-9ec1-9887b09c5db3::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-COO='party-b33cd1e3-df3d-4c97-aa25-cf0c64a5f94e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-COMP='party-b3866661-1596-4a92-bee0-2ce87a3cd002::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-INV='app_user_localnet-localparty-1::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TOKEN=$(sed -n 's/^LOCALNET_CANTON_TOKEN="\(.*\)"$/\1/p' /home/chineduanimalu/decentralization-manager/hackathon/localnet.sh)
-[[ -n $TOKEN ]]
 
 RUN=outage-$(date +%s)
 FUND_ID=$RUN
 T_REDEMPTION='#alluvren-v1:Alluvren.Redemption'
 T_CLAIMS='#alluvren-v1:Alluvren.Claims'
-fail() { echo "FAIL: $*" >&2; exit 1; }
-say() { printf '\n== %s ==\n' "$*"; }
 stamp() { date -u +%H:%M:%SZ; }
-new_id() { printf '%s-%s-%s' "$RUN" "$1" "$(date +%s%N)"; }
+new_id() { printf '%s-%s-%s' "$RUN" "$1" "$(uid)"; }
 
 # --- Canton console against node 1's participant (admin API only) ----------
 console() {
@@ -110,7 +96,7 @@ policy_cmd() {
 }
 make_batch() {
   local id=$1 dl
-  dl=$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
+  dl=$(iso_in 30)
   ledger_submit "$(new_id batch)" "[\"$P1\"]" "$(jq -cn --arg gov "$GOV" --arg prop "$P1" --arg op "$OP" --arg coo "$COO" --arg t "$TREAS" --arg comp "$COMP" \
     --arg inv "$INV" --arg id "$id" --arg pv "$FUND_ID@v1" --arg pol "$POLICY" --arg dl "$dl" --arg tpl "$T_REDEMPTION:RedemptionBatch" '
     [{CreateCommand:{templateId:$tpl,createArguments:{governanceParty:$gov,proposer:$prop,operator:$op,fundReviewer:$coo,treasuryReviewer:$t,
@@ -119,7 +105,7 @@ make_batch() {
 }
 approve() {
   local exp
-  exp=$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
+  exp=$(iso_in 30)
   ledger_submit "$(new_id approve)" "[\"$3\"]" "$(jq -cn --arg gov "$GOV" --arg r "$3" --arg role "$4" --arg b "$1" --arg id "$2" --arg pv "$FUND_ID@v1" --arg exp "$exp" --arg tpl "$T_REDEMPTION:RoleApproval" \
     '[{CreateCommand:{templateId:$tpl,createArguments:{governanceParty:$gov,reviewer:$r,role:$role,target:{batchCid:$b,batchId:$id,policyVersion:$pv},expiresAt:$exp}}}]')" | created ':RoleApproval'
 }

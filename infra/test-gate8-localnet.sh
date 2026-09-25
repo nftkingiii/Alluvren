@@ -3,36 +3,40 @@
 # signed-in users, the same calls the Live ledger UI makes.
 #   - Throwaway accounts with random passwords are generated here, hashed, and
 #     never printed; they are deleted at the end.
-#   - The backend runs in node:22-alpine on the VM's loopback with writes
-#     enabled; the ledger token is passed through a root-only env file.
-# Expects /tmp/alluvren-gate8/app to contain backend/src and backend/package.json.
-# Runs as root on the LocalNet VM.
+#   - The backend (backend/src from this repo) listens on loopback port 8787
+#     with writes enabled, using Node 20+ if installed, otherwise the
+#     node:22-alpine image with host networking (Linux). The ledger token
+#     stays in a private temp file.
+# Needs infra/setup-localnet.sh to have run on this LocalNet.
 set -Eeuo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/localnet-env.sh"
 
-BASE=http://127.0.0.1
-JSON_API=$BASE:2975
 API=$BASE:8787
 ORIGIN=http://alluvren.gate8
-ROOT=/tmp/alluvren-gate8
-WORK=$ROOT/work
-GOV='demo-party::1220ebce9d2445fcdc8f78c1f9993b9d4d1be362e32939eb6d6ab62f6c54048accea'
-P1='party-2db40dfe-79ad-4858-aa97-2daf52f8893e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-P2='party-39699690-05f3-49be-9279-942d59092179::12208876893b8cc00304d1aeee9cd6fffdbe5444c96837dea659999c257006ea7b45'
-OP='party-abc34a43-8b10-4fb5-8749-9c09c4b5151a::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TREAS='party-16f22a76-5c1f-4400-9ec1-9887b09c5db3::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-COO='party-b33cd1e3-df3d-4c97-aa25-cf0c64a5f94e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-COMP='party-b3866661-1596-4a92-bee0-2ce87a3cd002::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-INV='app_user_localnet-localparty-1::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8'
-TOKEN=$(sed -n 's/^LOCALNET_CANTON_TOKEN="\(.*\)"$/\1/p' /home/chineduanimalu/decentralization-manager/hackathon/localnet.sh)
-[[ -n $TOKEN ]]
+APP_DIR=$REPO_DIR/backend
+WORK=$(mktemp -d)
+chmod 700 "$WORK"
+BACKEND_PID=""
+if command -v node >/dev/null 2>&1 && [[ $(node -p 'process.versions.node.split(".")[0]') -ge 20 ]]; then
+  NODE_MODE=host
+else
+  NODE_MODE=docker
+fi
+# Runs node with APP and WORKD pointing at the backend and the private work dir.
+run_node() {
+  if [[ $NODE_MODE == host ]]; then
+    APP=$APP_DIR WORKD=$WORK node "$@"
+  else
+    docker run --rm -v "$APP_DIR:/app:ro" -v "$WORK:/work" -e APP=/app -e WORKD=/work node:22-alpine node "$@"
+  fi
+}
 
 RUN=g8-$(date +%s)
 FUND_ID=$RUN
 T='#alluvren-v1:Alluvren.Redemption'
-fail() { echo "FAIL: $*" >&2; exit 1; }
-say() { printf '\n== %s ==\n' "$*"; }
 pass() { echo "PASS: $*"; }
 cleanup() {
+  [[ -n $BACKEND_PID ]] && kill "$BACKEND_PID" >/dev/null 2>&1 || true
   docker rm -f alluvren-gate8 >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -41,7 +45,7 @@ trap cleanup EXIT
 # --- operator runbook (direct ledger + DecMan), used only for setup --------
 ledger_submit() {
   local body
-  body=$(jq -cn --arg id "$RUN-$1-$(date +%s%N)" --argjson actors "$2" --argjson commands "$3" \
+  body=$(jq -cn --arg id "$RUN-$1-$(uid)" --argjson actors "$2" --argjson commands "$3" \
     '{commands:{userId:"ledger-api-user",commandId:$id,actAs:$actors,commands:$commands}}')
   curl -fsS "$JSON_API/v2/commands/submit-and-wait-for-transaction" \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$body"
@@ -91,7 +95,7 @@ for _ in $(seq 1 10); do
   [[ -n $POLICY_CID ]] && break; sleep 2
 done
 [[ -n $POLICY_CID ]] || fail 'FundPolicy not visible'
-DL=$(date -u -d '+20 minutes' +%Y-%m-%dT%H:%M:%S.%3NZ)
+DL=$(iso_in 20)
 BATCH=$(ledger_submit batch "[\"$P1\"]" "$(jq -cn --arg gov "$GOV" --arg prop "$P1" --arg op "$OP" --arg coo "$COO" --arg t "$TREAS" --arg comp "$COMP" \
   --arg inv "$INV" --arg id "$RUN-b1" --arg pv "$FUND_ID@v1" --arg pol "$POLICY_CID" --arg dl "$DL" --arg tpl "$T:RedemptionBatch" '
   [{CreateCommand:{templateId:$tpl,createArguments:{governanceParty:$gov,proposer:$prop,operator:$op,fundReviewer:$coo,treasuryReviewer:$t,
@@ -102,28 +106,32 @@ echo "policy=$POLICY_CID batch=$BATCH"
 
 # --- throwaway accounts and the real backend ------------------------------
 say 'Start the backend with throwaway accounts (passwords never printed)'
-mkdir -p "$WORK"; chmod 700 "$WORK"
-jq -cn --arg p1 "$P1" --arg p2 "$P2" --arg t "$TREAS" --arg coo "$COO" --arg comp "$COMP" --arg inv "$INV" '
+# The operator account acts as the batch proposer (node 2's member); each
+# governance account is bound to the member hosted on its DecMan node.
+jq -cn --arg p1 "$P1" --arg m1 "$MEMBER_1" --arg m2 "$MEMBER_2" --arg t "$TREAS" --arg coo "$COO" --arg comp "$COMP" --arg inv "$INV" '
   [{username:"operator",party:$p1,roles:["Operator"]},
    {username:"treasury",party:$t,roles:["TreasuryReviewer"]},
    {username:"coo",party:$coo,roles:["FinalSignoff"]},
    {username:"compliance",party:$comp,roles:["ComplianceReviewer"]},
-   {username:"member-1",party:$p1,roles:["GovernanceMember"],decmanNode:"p1"},
-   {username:"member-2",party:$p2,roles:["GovernanceMember"],decmanNode:"p2"},
+   {username:"member-1",party:$m1,roles:["GovernanceMember"],decmanNode:"p1"},
+   {username:"member-2",party:$m2,roles:["GovernanceMember"],decmanNode:"p2"},
    {username:"investor",party:$inv,roles:["Investor"]}]' > "$WORK/people.json"
-docker run --rm -v "$ROOT/app:/app:ro" -v "$WORK:/work" node:22-alpine node --input-type=module -e '
+run_node --input-type=module -e '
   import { readFileSync, writeFileSync } from "node:fs";
   import { randomBytes } from "node:crypto";
-  import { hashPassword } from "/app/src/auth.mjs";
-  const people = JSON.parse(readFileSync("/work/people.json", "utf8"));
+  import { join } from "node:path";
+  import { pathToFileURL } from "node:url";
+  const { hashPassword } = await import(pathToFileURL(join(process.env.APP, "src/auth.mjs")).href);
+  const work = process.env.WORKD;
+  const people = JSON.parse(readFileSync(join(work, "people.json"), "utf8"));
   const passwords = {}; const users = [];
   for (const p of people) {
     const pw = randomBytes(24).toString("base64url");
     passwords[p.username] = pw;
     users.push({ ...p, passwordHash: await hashPassword(pw) });
   }
-  writeFileSync("/work/accounts.json", JSON.stringify({ users }), { mode: 0o600 });
-  writeFileSync("/work/passwords.json", JSON.stringify(passwords), { mode: 0o600 });
+  writeFileSync(join(work, "accounts.json"), JSON.stringify({ users }), { mode: 0o600 });
+  writeFileSync(join(work, "passwords.json"), JSON.stringify(passwords), { mode: 0o600 });
 '
 umask 077
 cat > "$WORK/backend.env" <<ENV
@@ -134,14 +142,18 @@ GOVERNANCE_PARTY_ID=$GOV
 RULES_CONTRACT_ID=$RULES
 ALLUVREN_PACKAGE_REF=#alluvren-v1
 ENVIRONMENT=LocalNet
-ACCOUNTS_FILE=/work/accounts.json
 LEDGER_JSON_API_URL=http://127.0.0.1:2975
 LEDGER_TOKEN=$TOKEN
 WRITES_ENABLED=true
 RATE_LIMIT_PER_MINUTE=1000
 ENV
-docker run -d --name alluvren-gate8 --network host -v "$ROOT/app:/app:ro" -v "$WORK:/work:ro" --env-file "$WORK/backend.env" \
-  node:22-alpine node /app/src/server.mjs >/dev/null
+if [[ $NODE_MODE == host ]]; then
+  (set -a; . "$WORK/backend.env"; ACCOUNTS_FILE=$WORK/accounts.json; exec node "$APP_DIR/src/server.mjs") > "$WORK/backend.log" 2>&1 &
+  BACKEND_PID=$!
+else
+  docker run -d --name alluvren-gate8 --network host -v "$APP_DIR:/app:ro" -v "$WORK:/work:ro" --env-file "$WORK/backend.env" \
+    -e ACCOUNTS_FILE=/work/accounts.json node:22-alpine node /app/src/server.mjs >/dev/null
+fi
 for _ in $(seq 1 30); do curl -fsS "$API/healthz" >/dev/null 2>&1 && break; sleep 1; done
 HEALTH=$(curl -fsS "$API/healthz")
 [[ $(echo "$HEALTH" | jq -r '.writesEnabled') == true ]] || fail "backend not healthy with writes enabled: $HEALTH"

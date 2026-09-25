@@ -96,7 +96,24 @@ Gate 6 is complete for the LocalNet integration. It does not establish independe
 | Tests detect a privacy leak | Mutation (entitlements observed by every batch investor) made three privacy/lifecycle tests fail; code restored and all 7 tests re-passed | PASS |
 | Backend exposure | Backend queries only `RedemptionBatch`/`RoleApproval` by package name `#alluvren-v1`; new investor templates are not exposed by existing read routes | Checked by source inspection; backend tests not rerun (no backend change) |
 
-Boundary: Daml Script visibility is not an authenticated Ledger API test. Separate-credential visibility (DESIGN P01/P02), the LocalNet upgrade to 0.2.0, and a governed finalization that creates these records on LocalNet remain unverified.
+Boundary: Daml Script visibility is not an authenticated Ledger API test.
+
+## Gate 7 on BitSafe LocalNet (2026-09-25)
+
+VM `alluvren-bitsafe` started, services recovered with `infra/recover-localnet.sh` (no volume reset; DecMan 8081-8083 healthy, validators healthy), then stopped and verified `TERMINATED` after the run.
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Upgrade accepted by Canton | `infra/distribute-dar-localnet.sh` ran DecMan `/dars/distribute` (workflow `dars-021a3b39dabfe4c5-dars-distribute-1790340866`, HTTP 202, P2/P3 accepted, status completed); `/packages/vetted` on 8081, 8082, 8083 each returned `alluvren-v1` 0.2.0 package ID `070bfd7a3440607deb6455b7ce299eee4fbf09f41f4d4d56c5001681df363b24` | PASS |
+| Governed finalization on 0.2.0 | `infra/test-gate7-localnet.sh` run `gate7-1790341203`: batch (A 600→300, B 300→150), Fund and Treasury approvals, `FinalizeRedemption` confirmed on 8081 and 8082, executed on 8083: HTTP 200 `Action executed successfully` | PASS; batch CID `00458cfb82bdc9c82aa9329ea94e666a9f49fdfbb0714e4de0e671abcd5008cb71ca...` |
+| Records created by governed execution | Per-party active-contract queries (participant 1 JSON API): A sees exactly one 300-unit `ClaimEntitlement` and one 300-unit `OutstandingRedemption`; B sees exactly its 150/150 | PASS; A entitlement `0000aa08c741...`, A outstanding `00081c73ed22...`, B entitlement `00e6399342a7...`, B outstanding `000fbe366336...` |
+| Ledger per-party privacy | A's query contains nothing of B's and vice versa; operator, Fund reviewer, Treasury reviewer and proposer queries return no `Alluvren.Claims` contracts | PASS |
+| Wrong-party actions | B exercising A's acknowledge and withdraw choices was rejected (HTTP 404: contract not visible to B) | PASS |
+| Once-only acknowledgment / withdrawal | A acknowledged (receipt `00dfbdecff07...`, 300 units, `DemoAcknowledgment`) and withdrew (release `00579cd0d093...`, 300 units); both replays rejected; A's receipt not visible to B | PASS |
+| Cleanup | B consumed its own records; no open entitlements/outstanding remain for this run. Demo receipts remain active as evidence. An earlier run `gate7-1790341115` stopped on a harness parsing bug after A's acknowledgment; its remaining open records were consumed via the harness `cleanup` mode before the clean run | PASS |
+| Audit readback | DecMan `/governance/chain-audit` on 8081 returned only 16 entries up to offset 876 (2026-09-21) regardless of page parameters, so it does not show this run (or Gate 6's offset 4917) | NOT VERIFIED; audit endpoint coverage needs investigation |
+
+Test identities: investors are two existing participant-1 parties with no Alluvren role (`app_user_localnet-localparty-1`, `party-b3866661...`), controlled in one sandbox. Visibility used the shared harness ledger user with per-party filters: this proves the ledger's per-party projection, not isolation between separately authenticated users. Separate-credential tests (DESIGN P01/P02) remain unverified; minting per-investor tokens was not done in this session.
 
 ## Workspace checks (2026-09-24)
 

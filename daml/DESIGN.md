@@ -120,7 +120,14 @@ Daml Script authorization tests are not a substitute for separate authenticated 
 
 ## Policy-driven role governance (proposed next slice, 2026-09-25)
 
-Status: **design only, not implemented.** Supersedes the fixed two-reviewer rule for new batches; the shipped `alluvren-v1` 0.2.0 behavior stays valid for existing batches.
+Status: **implemented locally as `alluvren-v1` 0.3.0 (2026-09-25); P-01..P-09 pass as Daml Script tests; P-10 (LocalNet) not yet run.** Supersedes the fixed two-reviewer rule for new batches; legacy batches keep the 0.2.0 behavior plus the conflict-of-interest check.
+
+Implementation notes (deviations from the table below):
+- All policy types live in `Alluvren.Redemption`, because `RedemptionBatch` pins a `FundPolicy` and the policy uses `ApprovalRole`; separate modules would form an import cycle.
+- `FundPolicy` has no `approvalTtl`; each `RoleApproval` already carries its own expiry.
+- `RedemptionBatch` gained a third optional field, `policyMembers`, so policy members can observe (and review) the batch. Finalization requires it to equal the pinned policy's member set.
+- A duplicate approval CID or the same member approving twice is rejected rather than counted once.
+- Policy versions are bound through `policyVersion = "<fundId>@v<version>"`.
 
 ### Why
 

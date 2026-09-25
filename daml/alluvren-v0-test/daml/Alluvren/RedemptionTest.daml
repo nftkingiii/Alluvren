@@ -34,6 +34,9 @@ testWrongBusinessRoleRejectedThenCorrectRolesFinalize = script do
       totalRequested = 600
       totalAllocated = 300
       recoveryDeadline = addRelTime now (seconds 3600)
+      policyCid = None
+      policyMembers = None
+      exceptions = None
 
   let target = ApprovalTarget with batchCid; batchId = "window-001-batch-001"; policyVersion = "policy-v1"
 

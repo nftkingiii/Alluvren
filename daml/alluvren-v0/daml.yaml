@@ -1,6 +1,6 @@
 sdk-version: 3.4.11
 name: alluvren-v1
-version: 0.2.0
+version: 0.3.0
 source: daml
 dependencies:
   - daml-prim
@@ -12,4 +12,4 @@ build-options:
   - --target=2.2
   - --ghc-option=-Wunused-binds
   - --ghc-option=-Wunused-matches
-upgrades: ../../artifacts/alluvren-v1-0.1.0.dar
+upgrades: ../../artifacts/alluvren-v1-0.2.0.dar

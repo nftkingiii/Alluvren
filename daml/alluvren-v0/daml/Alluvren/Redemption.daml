@@ -1,8 +1,9 @@
 module Alluvren.Redemption where
 
 import DA.Action (void, when)
-import DA.Foldable (forA_)
-import DA.List (unique, sortOn)
+import DA.Foldable (forA_, maximum)
+import DA.List (unique, sortOn, dedup)
+import DA.Optional (fromOptional, isSome)
 import Alluvren.Claims
 import Governance.Action
 import Splice.Util (require)
@@ -12,6 +13,9 @@ import Splice.Util (require)
 data ApprovalRole
   = FundReviewer
   | TreasuryReviewer
+  | ComplianceReviewer
+  | AdministratorCheck
+  | FinalSignoff
   deriving (Eq, Show)
 
 data AllocationRow = AllocationRow
@@ -86,9 +90,15 @@ template RedemptionBatch
     totalRequested : Int
     totalAllocated : Int
     recoveryDeadline : Time
+    -- Policy batches (0.3.0+) pin a FundPolicy and must be finalized with
+    -- RedemptionBatch_FinalizeWithPolicy. For them, fundReviewer and
+    -- treasuryReviewer are informational only. None = legacy two-reviewer rule.
+    policyCid : Optional (ContractId FundPolicy)
+    policyMembers : Optional [Party]
+    exceptions : Optional [ExceptionNote]
   where
     signatory proposer
-    observer governanceParty, operator, fundReviewer, treasuryReviewer
+    observer governanceParty, operator, fundReviewer, treasuryReviewer, fromOptional [] policyMembers
 
     ensure batchId /= ""
         && policyVersion /= ""
@@ -110,6 +120,7 @@ template RedemptionBatch
         && totalRequested == sum (map (.requestedUnits) rows)
         && unique (map (.requestId) rows)
         && validAllocation totalRequested totalAllocated rows
+        && isSome policyCid == isSome policyMembers
 
     choice RedemptionBatch_Finalize : FinalizationRecord
       with
@@ -119,6 +130,9 @@ template RedemptionBatch
       do
         now <- getTime
         require "Batch execution deadline has passed" (now < recoveryDeadline)
+        require "Batch is governed by a fund policy; use FinalizeWithPolicy" (policyCid == None)
+        require "A reviewer is an investor in this batch"
+          (notElem fundReviewer (batchInvestors rows) && notElem treasuryReviewer (batchInvestors rows))
         fundApproval <- exercise fundApprovalCid RoleApproval_Consume
         treasuryApproval <- exercise treasuryApprovalCid RoleApproval_Consume
         require "Fund approval targets the wrong batch"
@@ -135,26 +149,56 @@ template RedemptionBatch
             && treasuryApproval.role == TreasuryReviewer)
         require "Approvals must come from distinct parties"
           (fundApproval.reviewer /= treasuryApproval.reviewer)
-        -- Each investor receives private records for its own row only. The
-        -- batch is consumed by this choice, so these are created exactly once.
-        forA_ rows \r -> do
-          when (r.allocatedUnits > 0) do
-            void $ create ClaimEntitlement with
-              governanceParty
-              investor = r.investor
-              batchId
-              policyVersion
-              requestId = r.requestId
-              units = r.allocatedUnits
-          let outstanding = r.requestedUnits - r.allocatedUnits
-          when (outstanding > 0) do
-            void $ create OutstandingRedemption with
-              governanceParty
-              investor = r.investor
-              batchId
-              policyVersion
-              requestId = r.requestId
-              units = outstanding
+        -- The batch is consumed by this choice, so investor records are
+        -- created exactly once.
+        createInvestorRecords governanceParty batchId policyVersion rows
+        pure FinalizationRecord with
+          batchId
+          policyVersion
+          totalRequested
+          totalAllocated
+          finalizedAt = now
+
+    -- Policy-governed finalization: required roles come from the pinned
+    -- FundPolicy plus any conditional requirement triggered by this batch.
+    choice RedemptionBatch_FinalizeWithPolicy : FinalizationRecord
+      with
+        approvalCids : [ContractId RoleApproval]
+      controller governanceParty
+      do
+        now <- getTime
+        require "Batch execution deadline has passed" (now < recoveryDeadline)
+        pinned <- case policyCid of
+          None -> abort "Batch has no fund policy; use RedemptionBatch_Finalize"
+          Some cid -> pure cid
+        -- Fails if the policy was superseded: a rule change needs a new batch.
+        policy <- fetch pinned
+        require "Policy governance party mismatch" (policy.governanceParty == governanceParty)
+        require "Policy operator mismatch" (policy.operator == operator)
+        require "Batch policy version does not match the pinned policy"
+          (policyVersion == policyVersionLabel policy)
+        require "Batch observers do not match the policy members"
+          (policyMembers == Some (policyMemberSet policy))
+        require "Duplicate approval contract" (unique approvalCids)
+        approvals <- forA approvalCids \cid -> exercise cid RoleApproval_Consume
+        let target = ApprovalTarget with batchCid = self; batchId; policyVersion
+            approvers = map (.reviewer) approvals
+            required = effectiveRequirements policy this
+        require "Approval targets the wrong batch" (all (\a -> a.target == target) approvals)
+        require "Approval governance party mismatch"
+          (all (\a -> a.governanceParty == governanceParty) approvals)
+        require "A party approved more than once or under more than one role" (unique approvers)
+        require "An approver is an investor in this batch"
+          (not (any (`elem` batchInvestors rows) approvers))
+        require "An approver is the proposer or operator"
+          (not (any (\p -> p == proposer || p == operator) approvers))
+        forA_ approvals \a ->
+          require "Approval is not from a member of a role this batch requires"
+            (any (\r -> r.role == a.role && elem a.reviewer r.members) required)
+        forA_ required \r ->
+          require ("Missing required approvals for role " <> show r.role)
+            (length (filter (\a -> a.role == r.role) approvals) >= r.quorum)
+        createInvestorRecords governanceParty batchId policyVersion rows
         pure FinalizationRecord with
           batchId
           policyVersion
@@ -167,6 +211,31 @@ template RedemptionBatch
       do
         now <- getTime
         require "Batch recovery deadline has not passed" (now >= recoveryDeadline)
+
+batchInvestors : [AllocationRow] -> [Party]
+batchInvestors = map (.investor)
+
+-- Each investor receives private records for its own row only.
+createInvestorRecords : Party -> Text -> Text -> [AllocationRow] -> Update ()
+createInvestorRecords governanceParty batchId policyVersion rows =
+  forA_ rows \r -> do
+    when (r.allocatedUnits > 0) do
+      void $ create ClaimEntitlement with
+        governanceParty
+        investor = r.investor
+        batchId
+        policyVersion
+        requestId = r.requestId
+        units = r.allocatedUnits
+    let outstanding = r.requestedUnits - r.allocatedUnits
+    when (outstanding > 0) do
+      void $ create OutstandingRedemption with
+        governanceParty
+        investor = r.investor
+        batchId
+        policyVersion
+        requestId = r.requestId
+        units = outstanding
 
 -- Largest remainder allocation; equal remainders use request ID ascending.
 -- Bounded total units keep the integer product below the Int limit.
@@ -206,4 +275,180 @@ template FinalizeRedemption
         _ <- exercise batchCid RedemptionBatch_Finalize with
           fundApprovalCid
           treasuryApprovalCid
+        pure ()
+
+-- ---------------------------------------------------------------------------
+-- Policy-driven role governance (0.3.0). Types live in this module because
+-- RedemptionBatch pins a FundPolicy and the policy uses ApprovalRole.
+
+data ExceptionNote = ExceptionNote
+  with
+    requestId : Text
+    note : Text
+  deriving (Eq, Show)
+
+-- N-of-M distinct members of one role.
+data RoleRequirement = RoleRequirement
+  with
+    role : ApprovalRole
+    members : [Party]
+    quorum : Int
+  deriving (Eq, Show)
+
+-- Facts computed from the batch itself, in integer basis points.
+data Trigger
+  = FundedBelowBps Int
+    -- ^ totalAllocated / totalRequested is strictly below this share.
+  | InvestorShareAboveBps Int
+    -- ^ One investor receives strictly more than this share of allocated units.
+  | ExceptionsPresent
+    -- ^ The batch carries at least one exception note.
+  deriving (Eq, Show)
+
+data ConditionalRequirement = ConditionalRequirement
+  with
+    trigger : Trigger
+    requirement : RoleRequirement
+  deriving (Eq, Show)
+
+-- The approval policy for one fund. Created and replaced only through
+-- UpdateFundPolicy, i.e. behind the BitSafe threshold.
+template FundPolicy
+  with
+    governanceParty : Party
+    operator : Party
+    fundId : Text
+    version : Int
+    base : [RoleRequirement]
+    conditional : [ConditionalRequirement]
+  where
+    signatory governanceParty
+    observer operator, policyMemberSet this
+
+    ensure validPolicy this
+
+    -- Consuming; batches pinned to this contract can no longer finalize.
+    choice FundPolicy_Supersede : ()
+      controller governanceParty
+      do pure ()
+
+-- Equality-only uniqueness (ApprovalRole has no Ord instance; adding one is
+-- avoided to keep the upgraded type unchanged).
+allDistinct : Eq a => [a] -> Bool
+allDistinct xs = length (foldl (\acc x -> if elem x acc then acc else x :: acc) [] xs) == length xs
+
+validRequirement : Party -> Party -> RoleRequirement -> Bool
+validRequirement governanceParty operator r =
+  r.quorum >= 1
+    && r.quorum <= length r.members
+    && unique r.members
+    && notElem governanceParty r.members
+    && notElem operator r.members
+
+validTrigger : Trigger -> Bool
+validTrigger (FundedBelowBps bps) = bps >= 1 && bps <= 10000
+validTrigger (InvestorShareAboveBps bps) = bps >= 0 && bps < 10000
+validTrigger ExceptionsPresent = True
+
+validPolicy : FundPolicy -> Bool
+validPolicy p =
+  let baseRoles = map (.role) p.base
+      -- A conditional requirement for a base role must name the same members;
+      -- it can only raise that role's quorum.
+      consistentWithBase c = case filter (\r -> r.role == c.requirement.role) p.base of
+        [] -> True
+        (b :: _) -> b.members == c.requirement.members
+  in p.fundId /= ""
+    && p.version >= 1
+    && p.operator /= p.governanceParty
+    && not (null p.base)
+    && allDistinct baseRoles
+    && all (validRequirement p.governanceParty p.operator) p.base
+    && all (\c -> validTrigger c.trigger
+          && validRequirement p.governanceParty p.operator c.requirement
+          && consistentWithBase c) p.conditional
+
+policyVersionLabel : FundPolicy -> Text
+policyVersionLabel p = p.fundId <> "@v" <> show p.version
+
+policyMemberSet : FundPolicy -> [Party]
+policyMemberSet p =
+  dedup (concatMap (.members) p.base <> concatMap (\c -> c.requirement.members) p.conditional)
+
+triggerHolds : RedemptionBatch -> Trigger -> Bool
+triggerHolds b (FundedBelowBps bps) = b.totalAllocated * 10000 < bps * b.totalRequested
+triggerHolds b (InvestorShareAboveBps bps) =
+  b.totalAllocated > 0
+    && any (\r -> r.allocatedUnits * 10000 > bps * b.totalAllocated) b.rows
+triggerHolds b ExceptionsPresent = not (null (fromOptional [] b.exceptions))
+
+-- Base requirements plus every triggered conditional requirement, merged per
+-- role by taking the highest quorum.
+effectiveRequirements : FundPolicy -> RedemptionBatch -> [RoleRequirement]
+effectiveRequirements p b =
+  let triggered = map (.requirement) (filter (\c -> triggerHolds b c.trigger) p.conditional)
+      allReqs = p.base <> triggered
+      roles = foldl (\acc r -> if elem r.role acc then acc else acc <> [r.role]) [] allReqs
+      merge role =
+        let same = filter (\r -> r.role == role) allReqs
+        in case same of
+          [] -> error "unreachable"
+          (first :: _) -> first with quorum = maximum (map (.quorum) same)
+  in map merge roles
+
+-- Creates the first policy (currentPolicyCid = None) or replaces the current
+-- one with version + 1. Executed only through BitSafe GovernanceRules.
+template UpdateFundPolicy
+  with
+    governanceParty : Party
+    proposer : Party
+    currentPolicyCid : Optional (ContractId FundPolicy)
+    newPolicy : FundPolicy
+    description : Text
+  where
+    signatory proposer
+    observer governanceParty
+
+    interface instance GovernableAction for UpdateFundPolicy where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "UpdateFundPolicy"
+        description
+
+      executeImpl = do
+        require "Replacement policy governance party mismatch"
+          (newPolicy.governanceParty == governanceParty)
+        case currentPolicyCid of
+          None -> require "Initial policy must be version 1" (newPolicy.version == 1)
+          Some cid -> do
+            -- Fails if another update already superseded this policy.
+            current <- fetch cid
+            require "Replacement policy is for a different fund" (newPolicy.fundId == current.fundId)
+            require "Replacement policy must be the next version"
+              (newPolicy.version == current.version + 1)
+            exercise cid FundPolicy_Supersede
+        void $ create newPolicy
+
+-- Governed proposal for policy batches.
+template FinalizePolicyRedemption
+  with
+    governanceParty : Party
+    proposer : Party
+    batchCid : ContractId RedemptionBatch
+    approvalCids : [ContractId RoleApproval]
+    description : Text
+  where
+    signatory proposer
+    observer governanceParty
+
+    interface instance GovernableAction for FinalizePolicyRedemption where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "FinalizePolicyRedemption"
+        description
+
+      executeImpl = do
+        _ <- exercise batchCid RedemptionBatch_FinalizeWithPolicy with approvalCids
         pure ()

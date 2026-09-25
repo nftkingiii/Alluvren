@@ -54,6 +54,9 @@ setupFinalizedBatch = do
       totalRequested = 1000
       totalAllocated = 500
       recoveryDeadline = expiry
+      policyCid = None
+      policyMembers = None
+      exceptions = None
   let target = ApprovalTarget with batchCid; batchId; policyVersion
   fundApprovalCid <- submit fund do
     createCmd RoleApproval with
@@ -182,6 +185,9 @@ testZeroAllocationCreatesNoEntitlement = script do
       totalRequested = 400
       totalAllocated = 0
       recoveryDeadline = expiry
+      policyCid = None
+      policyMembers = None
+      exceptions = None
   let target = ApprovalTarget with batchCid; batchId = "window-007-batch-zero"; policyVersion = "policy-v1"
   fundApprovalCid <- submit fund do
     createCmd RoleApproval with
@@ -221,6 +227,9 @@ testRejectedFinalizationCreatesNoInvestorRecords = script do
       totalRequested = 200
       totalAllocated = 100
       recoveryDeadline = expiry
+      policyCid = None
+      policyMembers = None
+      exceptions = None
   let target = ApprovalTarget with batchCid; batchId = "window-007-batch-reject"; policyVersion = "policy-v1"
   fundApprovalCid <- submit fund do
     createCmd RoleApproval with

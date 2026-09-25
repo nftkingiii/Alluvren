@@ -1,0 +1,338 @@
+module Alluvren.PolicyTest where
+
+import Daml.Script
+import DA.Foldable (forA_)
+import DA.Time (addRelTime, hours, seconds)
+import Alluvren.Claims
+import Alluvren.Redemption
+import Governance.Action
+
+-- Policy-driven role governance (daml/DESIGN.md P-01..P-09). The BitSafe
+-- threshold itself is exercised on LocalNet (P-10); here the governance party
+-- executes GovernableAction proposals directly, as GovernanceRules would.
+
+data Env = Env
+  with
+    gov : Party
+    op : Party
+    prop : Party
+    t1 : Party
+    t2 : Party
+    adm : Party
+    coo : Party
+    comp : Party
+    outsider : Party
+    inv1 : Party
+    inv2 : Party
+
+setupParties : Script Env
+setupParties = do
+  gov <- allocateParty "governance"
+  op <- allocateParty "operator"
+  prop <- allocateParty "proposer"
+  t1 <- allocateParty "treasury-1"
+  t2 <- allocateParty "treasury-2"
+  adm <- allocateParty "administrator"
+  coo <- allocateParty "coo"
+  comp <- allocateParty "compliance"
+  outsider <- allocateParty "outsider"
+  inv1 <- allocateParty "investor-1"
+  inv2 <- allocateParty "investor-2"
+  pure Env with ..
+
+-- Base: Treasury 1-of-2, Administrator 1-of-1, COO final sign-off 1-of-1.
+-- Conditional: funded below 50% or exceptions present -> Compliance 1-of-2;
+-- one investor above 80% of allocated units -> Treasury 2-of-2.
+-- t2 sits in both Treasury and Compliance to exercise separation of duties.
+basePolicy : Env -> FundPolicy
+basePolicy e = FundPolicy with
+  governanceParty = e.gov
+  operator = e.op
+  fundId = "demo-fund"
+  version = 1
+  base =
+    [ RoleRequirement TreasuryReviewer [e.t1, e.t2] 1
+    , RoleRequirement AdministratorCheck [e.adm] 1
+    , RoleRequirement FinalSignoff [e.coo] 1
+    ]
+  conditional =
+    [ ConditionalRequirement (FundedBelowBps 5000) (RoleRequirement ComplianceReviewer [e.comp, e.t2] 1)
+    , ConditionalRequirement (InvestorShareAboveBps 8000) (RoleRequirement TreasuryReviewer [e.t1, e.t2] 2)
+    , ConditionalRequirement ExceptionsPresent (RoleRequirement ComplianceReviewer [e.comp, e.t2] 1)
+    ]
+
+-- Governed creation/replacement: proposer submits, governance executes.
+governedPolicyUpdate : Env -> Optional (ContractId FundPolicy) -> FundPolicy -> Script ()
+governedPolicyUpdate e current newPolicy = do
+  cid <- submit e.prop $ createCmd UpdateFundPolicy with
+    governanceParty = e.gov
+    proposer = e.prop
+    currentPolicyCid = current
+    newPolicy
+    description = "policy update"
+  submit e.gov $ exerciseCmd (toInterfaceContractId @GovernableAction cid) GovernableAction_Execute
+
+currentPolicy : Env -> Script (ContractId FundPolicy, FundPolicy)
+currentPolicy e = do
+  policies <- query @FundPolicy e.gov
+  case policies of
+    [p] -> pure p
+    _ -> abort "expected exactly one active policy"
+
+setupPolicy : Script (Env, ContractId FundPolicy, FundPolicy)
+setupPolicy = do
+  e <- setupParties
+  governedPolicyUpdate e None (basePolicy e)
+  (cid, p) <- currentPolicy e
+  pure (e, cid, p)
+
+makeBatch : Env -> ContractId FundPolicy -> FundPolicy -> Text -> [AllocationRow] -> Optional [ExceptionNote] -> Script (ContractId RedemptionBatch)
+makeBatch e policyCid policy batchId rows exceptions = do
+  now <- getTime
+  submit e.prop $ createCmd RedemptionBatch with
+    governanceParty = e.gov
+    proposer = e.prop
+    operator = e.op
+    fundReviewer = e.coo
+    treasuryReviewer = e.t1
+    policyVersion = policyVersionLabel policy
+    batchId
+    rows
+    totalRequested = sum (map (.requestedUnits) rows)
+    totalAllocated = sum (map (.allocatedUnits) rows)
+    recoveryDeadline = addRelTime now (hours 1)
+    policyCid = Some policyCid
+    policyMembers = Some (policyMemberSet policy)
+    exceptions
+
+approve : Env -> FundPolicy -> ContractId RedemptionBatch -> Text -> Party -> ApprovalRole -> Script (ContractId RoleApproval)
+approve e policy batchCid batchId reviewer role = do
+  now <- getTime
+  submit reviewer $ createCmd RoleApproval with
+    governanceParty = e.gov
+    reviewer
+    role
+    target = ApprovalTarget with batchCid; batchId; policyVersion = policyVersionLabel policy
+    expiresAt = addRelTime now (hours 1)
+
+finalizeMustFail : Env -> ContractId RedemptionBatch -> [ContractId RoleApproval] -> Script ()
+finalizeMustFail e batchCid approvalCids =
+  submitMustFail e.gov $ exerciseCmd batchCid RedemptionBatch_FinalizeWithPolicy with approvalCids
+
+finalize : Env -> ContractId RedemptionBatch -> [ContractId RoleApproval] -> Script ()
+finalize e batchCid approvalCids = do
+  _ <- submit e.gov $ exerciseCmd batchCid RedemptionBatch_FinalizeWithPolicy with approvalCids
+  pure ()
+
+entitlementCount : Party -> Script Int
+entitlementCount p = do
+  xs <- query @ClaimEntitlement p
+  pure (length xs)
+
+-- Funded exactly 50%, largest investor 60%: only base roles required.
+evenRows : Env -> [AllocationRow]
+evenRows e = [AllocationRow "r-1" e.inv1 600 300, AllocationRow "r-2" e.inv2 400 200]
+
+-- P-01: invalid policies cannot be created; initial governed policy must be v1.
+testPolicyValidation : Script ()
+testPolicyValidation = script do
+  e <- setupParties
+  let p = basePolicy e
+      mustReject policy = submitMustFail e.gov (createCmd policy)
+  mustReject (p with base = [])
+  mustReject (p with base = [RoleRequirement TreasuryReviewer [e.t1] 0])
+  mustReject (p with base = [RoleRequirement TreasuryReviewer [e.t1] 2])
+  mustReject (p with base = [RoleRequirement TreasuryReviewer [e.t1, e.t1] 1])
+  mustReject (p with base = [RoleRequirement TreasuryReviewer [e.gov] 1])
+  mustReject (p with base = [RoleRequirement TreasuryReviewer [e.op] 1])
+  mustReject (p with base = [RoleRequirement TreasuryReviewer [e.t1] 1, RoleRequirement TreasuryReviewer [e.t2] 1])
+  mustReject (p with conditional = [ConditionalRequirement (FundedBelowBps 0) (RoleRequirement ComplianceReviewer [e.comp] 1)])
+  mustReject (p with conditional = [ConditionalRequirement (FundedBelowBps 10001) (RoleRequirement ComplianceReviewer [e.comp] 1)])
+  mustReject (p with conditional = [ConditionalRequirement (InvestorShareAboveBps 10000) (RoleRequirement ComplianceReviewer [e.comp] 1)])
+  -- A conditional requirement for a base role must keep the same members.
+  mustReject (p with conditional = [ConditionalRequirement ExceptionsPresent (RoleRequirement TreasuryReviewer [e.t1] 1)])
+  mustReject (p with version = 0)
+  -- Governed creation must start at version 1.
+  bad <- submit e.prop $ createCmd UpdateFundPolicy with
+    governanceParty = e.gov; proposer = e.prop; currentPolicyCid = None
+    newPolicy = (p with version = 2); description = "skip"
+  submitMustFail e.gov $ exerciseCmd (toInterfaceContractId @GovernableAction bad) GovernableAction_Execute
+  governedPolicyUpdate e None p
+  (_, created) <- currentPolicy e
+  assertMsg "governed policy created at version 1" (created.version == 1)
+
+-- P-02, P-03, P-04, P-08: quorum, membership, separation of duties,
+-- conflict of interest, exact approval sets, atomic rejection.
+testBaseRequirementsAndSeparation : Script ()
+testBaseRequirementsAndSeparation = script do
+  (e, policyCid, policy) <- setupPolicy
+  let bid = "batch-even"
+  batchCid <- makeBatch e policyCid policy bid (evenRows e) None
+  t1a <- approve e policy batchCid bid e.t1 TreasuryReviewer
+  t1b <- approve e policy batchCid bid e.t1 TreasuryReviewer
+  adma <- approve e policy batchCid bid e.adm AdministratorCheck
+  cooa <- approve e policy batchCid bid e.coo FinalSignoff
+  outsiderFinal <- approve e policy batchCid bid e.outsider FinalSignoff
+  admAsFinal <- approve e policy batchCid bid e.adm FinalSignoff
+  compa <- approve e policy batchCid bid e.comp ComplianceReviewer
+
+  -- Missing the COO final sign-off.
+  finalizeMustFail e batchCid [t1a, adma]
+  -- Non-member and wrong-role approvals do not count and are rejected.
+  finalizeMustFail e batchCid [t1a, adma, outsiderFinal]
+  finalizeMustFail e batchCid [t1a, admAsFinal]
+  -- Surplus approval for a role this batch does not require.
+  finalizeMustFail e batchCid [t1a, adma, cooa, compa]
+  -- Duplicate approval contract, and the same member approving twice.
+  finalizeMustFail e batchCid [t1a, t1a, adma, cooa]
+  finalizeMustFail e batchCid [t1a, t1b, adma, cooa]
+  -- Failed attempts left no investor records.
+  n <- entitlementCount e.inv1
+  assertMsg "rejected finalizations create no records" (n == 0)
+
+  -- Exact required set succeeds.
+  finalize e batchCid [t1a, adma, cooa]
+  n1 <- entitlementCount e.inv1
+  n2 <- entitlementCount e.inv2
+  assertMsg "both investors receive entitlements" (n1 == 1 && n2 == 1)
+
+  -- Conflict of interest: an approver who is an investor in the batch.
+  let bid2 = "batch-conflict"
+  conflictCid <- makeBatch e policyCid policy bid2 [AllocationRow "r-9" e.adm 600 300, AllocationRow "r-10" e.inv2 400 200] None
+  c1 <- approve e policy conflictCid bid2 e.t1 TreasuryReviewer
+  c2 <- approve e policy conflictCid bid2 e.adm AdministratorCheck
+  c3 <- approve e policy conflictCid bid2 e.coo FinalSignoff
+  finalizeMustFail e conflictCid [c1, c2, c3]
+
+-- P-05: requirements computed from the batch, including exact boundaries,
+-- and separation of duties across roles.
+testConditionalTriggers : Script ()
+testConditionalTriggers = script do
+  (e, policyCid, policy) <- setupPolicy
+
+  -- 49.99% funded: Compliance required.
+  let low = "batch-4999"
+  lowCid <- makeBatch e policyCid policy low [AllocationRow "l-1" e.inv1 6000 2999, AllocationRow "l-2" e.inv2 4000 2000] None
+  l1 <- approve e policy lowCid low e.t1 TreasuryReviewer
+  l2 <- approve e policy lowCid low e.adm AdministratorCheck
+  l3 <- approve e policy lowCid low e.coo FinalSignoff
+  finalizeMustFail e lowCid [l1, l2, l3]
+  -- The same party cannot satisfy Treasury and Compliance in one batch.
+  l2t <- approve e policy lowCid low e.t2 TreasuryReviewer
+  l2c <- approve e policy lowCid low e.t2 ComplianceReviewer
+  finalizeMustFail e lowCid [l2t, l2, l3, l2c]
+  l4 <- approve e policy lowCid low e.comp ComplianceReviewer
+  -- Governed finalization through the new proposal template.
+  proposalCid <- submit e.prop $ createCmd FinalizePolicyRedemption with
+    governanceParty = e.gov
+    proposer = e.prop
+    batchCid = lowCid
+    approvalCids = [l1, l2, l3, l4]
+    description = "49.99% funded batch with Compliance"
+  submit e.gov $ exerciseCmd (toInterfaceContractId @GovernableAction proposalCid) GovernableAction_Execute
+
+  -- Exactly 50.00% funded: Compliance not required (surplus would be rejected).
+  let even = "batch-5000"
+  evenCid <- makeBatch e policyCid policy even (evenRows e) None
+  e1 <- approve e policy evenCid even e.t1 TreasuryReviewer
+  e2 <- approve e policy evenCid even e.adm AdministratorCheck
+  e3 <- approve e policy evenCid even e.coo FinalSignoff
+  finalize e evenCid [e1, e2, e3]
+
+  -- One investor above 80% of allocated units: Treasury quorum rises to 2.
+  let conc = "batch-concentrated"
+  concCid <- makeBatch e policyCid policy conc [AllocationRow "c-1" e.inv1 900 450, AllocationRow "c-2" e.inv2 100 50] None
+  c1 <- approve e policy concCid conc e.t1 TreasuryReviewer
+  c2 <- approve e policy concCid conc e.adm AdministratorCheck
+  c3 <- approve e policy concCid conc e.coo FinalSignoff
+  finalizeMustFail e concCid [c1, c2, c3]
+  c4 <- approve e policy concCid conc e.t2 TreasuryReviewer
+  finalize e concCid [c1, c4, c2, c3]
+
+  -- Exception notes: Compliance required even when fully funded at 50%.
+  let exc = "batch-exceptions"
+  excCid <- makeBatch e policyCid policy exc (evenRows e) (Some [ExceptionNote "r-1" "lockup waiver"])
+  x1 <- approve e policy excCid exc e.t1 TreasuryReviewer
+  x2 <- approve e policy excCid exc e.adm AdministratorCheck
+  x3 <- approve e policy excCid exc e.coo FinalSignoff
+  finalizeMustFail e excCid [x1, x2, x3]
+  x4 <- approve e policy excCid exc e.comp ComplianceReviewer
+  finalize e excCid [x1, x2, x3, x4]
+
+-- P-06, P-07: policy changes are versioned and invalidate pinned batches.
+testPolicyUpdateBlocksPinnedBatch : Script ()
+testPolicyUpdateBlocksPinnedBatch = script do
+  (e, v1Cid, v1) <- setupPolicy
+  let bid = "batch-pinned"
+  batchCid <- makeBatch e v1Cid v1 bid (evenRows e) None
+  a1 <- approve e v1 batchCid bid e.t1 TreasuryReviewer
+  a2 <- approve e v1 batchCid bid e.adm AdministratorCheck
+  a3 <- approve e v1 batchCid bid e.coo FinalSignoff
+
+  -- Governed update to version 2.
+  governedPolicyUpdate e (Some v1Cid) (v1 with version = 2)
+  (_, v2) <- currentPolicy e
+  assertMsg "policy advanced to version 2" (v2.version == 2)
+
+  -- The batch pinned to v1 can no longer finalize.
+  finalizeMustFail e batchCid [a1, a2, a3]
+
+  -- A stale update against the superseded v1 fails.
+  stale <- submit e.prop $ createCmd UpdateFundPolicy with
+    governanceParty = e.gov; proposer = e.prop; currentPolicyCid = Some v1Cid
+    newPolicy = (v1 with version = 2); description = "stale"
+  submitMustFail e.gov $ exerciseCmd (toInterfaceContractId @GovernableAction stale) GovernableAction_Execute
+
+  -- Skipping a version fails.
+  (v2Cid, _) <- currentPolicy e
+  skip <- submit e.prop $ createCmd UpdateFundPolicy with
+    governanceParty = e.gov; proposer = e.prop; currentPolicyCid = Some v2Cid
+    newPolicy = (v1 with version = 4); description = "skip"
+  submitMustFail e.gov $ exerciseCmd (toInterfaceContractId @GovernableAction skip) GovernableAction_Execute
+
+  -- Recovery of the blocked batch still works after its deadline.
+  passTime (hours 1 + seconds 1)
+  submit e.op $ exerciseCmd batchCid RedemptionBatch_RecoverExpired
+  gone <- queryContractId e.op batchCid
+  assertMsg "blocked batch recovered" (gone == None)
+
+-- P-09: the legacy two-reviewer path is guarded and unchanged for legacy batches.
+testLegacyPathGuards : Script ()
+testLegacyPathGuards = script do
+  (e, policyCid, policy) <- setupPolicy
+  let bid = "batch-policy-legacy-call"
+  batchCid <- makeBatch e policyCid policy bid (evenRows e) None
+  f <- approve e policy batchCid bid e.coo FundReviewer
+  t <- approve e policy batchCid bid e.t1 TreasuryReviewer
+  -- A policy batch cannot be finalized through the legacy choice.
+  submitMustFail e.gov $ exerciseCmd batchCid RedemptionBatch_Finalize with
+    fundApprovalCid = f; treasuryApprovalCid = t
+
+  -- Legacy batch where the treasury reviewer is also an investor.
+  now <- getTime
+  let legacyId = "legacy-conflict"
+  legacyCid <- submit e.prop $ createCmd RedemptionBatch with
+    governanceParty = e.gov
+    proposer = e.prop
+    operator = e.op
+    fundReviewer = e.coo
+    treasuryReviewer = e.t1
+    policyVersion = "legacy-v1"
+    batchId = legacyId
+    rows = [AllocationRow "g-1" e.t1 600 300, AllocationRow "g-2" e.inv2 400 200]
+    totalRequested = 1000
+    totalAllocated = 500
+    recoveryDeadline = addRelTime now (hours 1)
+    policyCid = None
+    policyMembers = None
+    exceptions = None
+  let target = ApprovalTarget with batchCid = legacyCid; batchId = legacyId; policyVersion = "legacy-v1"
+  lf <- submit e.coo $ createCmd RoleApproval with
+    governanceParty = e.gov; reviewer = e.coo; role = FundReviewer; target; expiresAt = addRelTime now (hours 1)
+  lt <- submit e.t1 $ createCmd RoleApproval with
+    governanceParty = e.gov; reviewer = e.t1; role = TreasuryReviewer; target; expiresAt = addRelTime now (hours 1)
+  submitMustFail e.gov $ exerciseCmd legacyCid RedemptionBatch_Finalize with
+    fundApprovalCid = lf; treasuryApprovalCid = lt
+  forA_ [e.t1, e.inv2] \p -> do
+    n <- entitlementCount p
+    assertMsg "conflicted legacy batch created no records" (n == 0)

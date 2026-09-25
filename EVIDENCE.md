@@ -115,6 +115,24 @@ VM `alluvren-bitsafe` started, services recovered with `infra/recover-localnet.s
 
 Test identities: investors are two existing participant-1 parties with no Alluvren role (`app_user_localnet-localparty-1`, `party-b3866661...`), controlled in one sandbox. Visibility used the shared harness ledger user with per-party filters: this proves the ledger's per-party projection, not isolation between separately authenticated users. Separate-credential tests (DESIGN P01/P02) remain unverified; minting per-investor tokens was not done in this session.
 
+## Policy-driven role governance, local (2026-09-25)
+
+`alluvren-v1` 0.3.0 adds `FundPolicy` (per-role N-of-M quorums, conditional requirements), BitSafe-governed `UpdateFundPolicy`, `RedemptionBatch_FinalizeWithPolicy` and the `FinalizePolicyRedemption` proposal; legacy finalization gains a conflict-of-interest check. Spec: `daml/DESIGN.md` § Policy-driven role governance.
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Upgrade compatibility with 0.2.0 | `upgrades: ../../artifacts/alluvren-v1-0.2.0.dar`; build succeeds with warnings only: changed observers and precondition on `RedemptionBatch` (both evaluate unchanged for legacy batches, where the new optional fields are `None`) and internal Archive name renumbering | PASS locally; not yet vetted on LocalNet |
+| DAR identity | `artifacts/alluvren-v1-0.3.0.dar`, SHA-256 `CF56BF08595DD5CBA50A2A94BEAAA83B72837224903F4D72B8DA737BA5F2B836`, package `b2dcd98664024d1d872a6ec027e685400bfb568c0a6df35cf7322a333494a72d` | Recorded |
+| P-01 policy validation | `testPolicyValidation`: empty base, quorum 0 or above member count, duplicate members, governance/operator as members, duplicate base roles, out-of-range triggers, inconsistent conditional members, version 0 all rejected; governed creation must start at v1 | PASS |
+| P-02/P-03/P-04/P-08 | `testBaseRequirementsAndSeparation`: missing role, non-member, wrong role label, surplus approval, duplicate CID, same member twice and investor-approver all rejected; no records after rejections; exact set finalizes | PASS |
+| P-05 triggers | `testConditionalTriggers`: 49.99% funded needs Compliance, 50.00% does not; >80% investor share raises Treasury quorum to 2; exception notes need Compliance; one party cannot fill Treasury and Compliance; governed `FinalizePolicyRedemption` executes | PASS |
+| P-06/P-07 policy change | `testPolicyUpdateBlocksPinnedBatch`: governed v1→v2; batch pinned to v1 cannot finalize; stale update against v1 and version skip rejected; blocked batch recoverable after deadline | PASS |
+| P-09 legacy path | `testLegacyPathGuards`: legacy choice rejects policy batches; legacy batch with an investor-reviewer rejected with no records. All 7 earlier tests still pass | PASS |
+| Tests catch regressions | Mutations disabling the conflict-of-interest check, triggers, distinct-approver check, surplus rejection and exact-next-version rule each made at least one test fail; code restored, 12/12 pass | PASS |
+| Backend compatibility | Backend passes `RoleApproval.role` through as text, so new roles display without change; new batch fields are not projected | Source inspection |
+
+Boundary: BitSafe threshold behavior for `UpdateFundPolicy` and `FinalizePolicyRedemption` (P-10) is untested on LocalNet; tests execute the governable actions directly as the governance party.
+
 ## Workspace checks (2026-09-24)
 
 | Check | Result |

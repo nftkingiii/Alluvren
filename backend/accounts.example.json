@@ -1,0 +1,48 @@
+{
+  "users": [
+    {
+      "username": "operator",
+      "passwordHash": "scrypt$...replace with output of scripts/hash-password.mjs",
+      "party": "party-2db40dfe-79ad-4858-aa97-2daf52f8893e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8",
+      "roles": ["Operator"]
+    },
+    {
+      "username": "treasury",
+      "passwordHash": "scrypt$...",
+      "party": "party-16f22a76-5c1f-4400-9ec1-9887b09c5db3::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8",
+      "roles": ["TreasuryReviewer"]
+    },
+    {
+      "username": "coo",
+      "passwordHash": "scrypt$...",
+      "party": "party-b33cd1e3-df3d-4c97-aa25-cf0c64a5f94e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8",
+      "roles": ["FinalSignoff"]
+    },
+    {
+      "username": "compliance",
+      "passwordHash": "scrypt$...",
+      "party": "party-b3866661-1596-4a92-bee0-2ce87a3cd002::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8",
+      "roles": ["ComplianceReviewer"]
+    },
+    {
+      "username": "member-1",
+      "passwordHash": "scrypt$...",
+      "party": "party-2db40dfe-79ad-4858-aa97-2daf52f8893e::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8",
+      "roles": ["GovernanceMember"],
+      "decmanNode": "p1"
+    },
+    {
+      "username": "member-2",
+      "passwordHash": "scrypt$...",
+      "party": "party-39699690-05f3-49be-9279-942d59092179::12208876893b8cc00304d1aeee9cd6fffdbe5444c96837dea659999c257006ea7b45",
+      "roles": ["GovernanceMember"],
+      "decmanNode": "p2"
+    },
+    {
+      "username": "investor",
+      "passwordHash": "scrypt$...",
+      "party": "app_user_localnet-localparty-1::12201127dbbfdce012505c59bc8c05c9250187c0cceabd8e8c41fdf5ff169da291a8",
+      "roles": ["Investor"]
+    }
+  ]
+}

@@ -11,15 +11,15 @@ function issueFor(error) {
   const code = error.status;
   if (code === 401)
     return {
-      title: "Authentication required",
-      reason: "The service requires a valid session.",
-      action: "Restore your backend session, then check access again.",
+      title: "Sign in required",
+      reason: "Live governance evidence is only shown to signed-in staff accounts.",
+      action: "Open Live ledger, sign in with a staff account, then check access again.",
     };
   if (code === 403)
     return {
       title: "Read access denied",
-      reason: "The service refused access to governance evidence.",
-      action: "Ask your operator to grant read access, then retry.",
+      reason: "Your account cannot view the full batch list. Investors only see their own records.",
+      action: "Use Live ledger to see your own records, or sign in with a staff account.",
     };
   if (error.name === "TimeoutError")
     return {
@@ -60,6 +60,7 @@ function formatLedgerTime(micros) {
 async function getJson(path, signal) {
   const base = (import.meta.env.VITE_ALLUVREN_API_URL || "").replace(/\/$/, "");
   const response = await fetch(`${base}${path}`, {
+    credentials: "include",
     signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
   });
   if (!response.ok)

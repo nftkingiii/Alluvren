@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs",
+    "check": "node --check src/server.mjs && node --check src/auth.mjs && node --check src/ledger.mjs && node --check scripts/hash-password.mjs",
+    "hash-password": "node scripts/hash-password.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "engines": {

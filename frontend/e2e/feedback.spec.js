@@ -136,7 +136,7 @@ test("denied access is actionable, not an empty state, and can recover to empty 
     page.getByText("Read access denied", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("Ask your operator to grant read access, then retry."),
+    page.getByText("Use Live ledger to see your own records, or sign in with a staff account."),
   ).toBeVisible();
   await expect(page.getByText("No governance activity yet")).toHaveCount(0);
   expect(calls).toBe(1);

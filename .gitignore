@@ -8,3 +8,5 @@ dist/
 HACK_EVENT_GATE.json
 internal/
 decentralization-manager/
+accounts.json
+**/accounts.json

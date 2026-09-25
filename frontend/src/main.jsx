@@ -32,8 +32,10 @@ import {
   Asterisk,
   Compass,
   Leaf,
+  Radio,
 } from "lucide-react";
 import { ConnectionPanel, useGovernanceEvidence } from "./ConnectionPanel.jsx";
+import { LiveLedger } from "./LiveLedger.jsx";
 import {
   allocate,
   investors,
@@ -50,6 +52,7 @@ const tabs = [
   { id: "batches", name: "Batches", icon: Layers3 },
   { id: "approvals", name: "Approvals", icon: ShieldCheck },
   { id: "activity", name: "Activity", icon: History },
+  { id: "live", name: "Live ledger", icon: Radio },
 ];
 const status = (b, active) =>
   b.executed
@@ -617,7 +620,10 @@ function App() {
           <nav aria-label="Main navigation">
             {(persona === "operator"
               ? tabs
-              : [{ id: "investor", name: "My redemption", icon: Wallet }]
+              : [
+                  { id: "investor", name: "My redemption", icon: Wallet },
+                  { id: "live", name: "Live ledger", icon: Radio },
+                ]
             ).map((t) => (
               <button
                 key={t.id}
@@ -677,7 +683,9 @@ function App() {
         <div className="page-heading">
           <div>
             <h1>
-              {persona === "investor"
+              {tab === "live"
+                ? "Live ledger"
+                : persona === "investor"
                 ? "My redemption"
                 : {
                     desk: "Redemption desk",
@@ -695,7 +703,7 @@ function App() {
             )}
           </div>
           <div className="heading-actions">
-            <Button
+            {tab !== "live" && <Button
               icon={Download}
               className="quiet"
               onClick={() =>
@@ -721,7 +729,7 @@ function App() {
               }
             >
               {persona === "operator" ? "Export PDF" : "Export my PDF"}
-            </Button>
+            </Button>}
             {persona === "operator" &&
               ["desk", "requests", "activity"].includes(tab) && (
                 <Button
@@ -745,16 +753,25 @@ function App() {
               )}
           </div>
         </div>
-        <div className="demo-strip">
-          <span>
-            <span className="demo-tag">DEMO</span>Simulated allocations and
-            approvals. No assets move.
-          </span>
-          <button onClick={() => setModal("reset")}>
-            Reset demo
-            <RefreshCw size={12} />
-          </button>
-        </div>
+        {tab === "live" ? (
+          <div className="demo-strip">
+            <span>
+              <span className="demo-tag">LOCALNET</span>Actions submit real Daml
+              commands to BitSafe LocalNet. No assets move.
+            </span>
+          </div>
+        ) : (
+          <div className="demo-strip">
+            <span>
+              <span className="demo-tag">DEMO</span>Simulated allocations and
+              approvals. No assets move.
+            </span>
+            <button onClick={() => setModal("reset")}>
+              Reset demo
+              <RefreshCw size={12} />
+            </button>
+          </div>
+        )}
 
         <div key={`${tab}-${persona}`} className="view-enter">
           {tab === "desk" && persona === "operator" && (
@@ -1294,7 +1311,9 @@ function App() {
             </section>
           )}
 
-          {persona === "investor" &&
+          {tab === "live" && <LiveLedger notify={announce} />}
+
+          {persona === "investor" && tab !== "live" &&
             (() => {
               const r = allocate(investors, current.liquidity)[0];
               const claimed = current.claimed.includes(r.id);

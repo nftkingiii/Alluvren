@@ -3531,3 +3531,23 @@ main {
     width: 100%;
   }
 }
+
+/* Live ledger (Gate 8) */
+.live-ledger { display: grid; gap: 16px; }
+.live-ledger .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
+.live-ledger h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 16px; }
+.live-ledger h3 { margin: 14px 0 6px; font-size: 14px; }
+.live-ledger code { font-size: 12px; color: var(--muted); }
+.live-signin { max-width: 420px; display: grid; gap: 8px; }
+.live-signin input { padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--raised); color: var(--text); font: inherit; }
+.live-signin input:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.live-account { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.live-account-actions, .live-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.live-roles { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.live-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.live-row:first-of-type { border-top: 0; }
+.live-batch { border-top: 1px solid var(--line); padding: 12px 0; display: grid; gap: 8px; }
+.live-approvals { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.live-approvals li { display: flex; gap: 8px; align-items: center; }
+.live-error { color: var(--coral); margin: 0; }
+.live-banner { margin: 0; padding: 10px 14px; border-radius: var(--radius); background: var(--raised); color: var(--gold); }

@@ -148,6 +148,25 @@ VM started, services recovered (`infra/recover-localnet.sh` restarted Splice aft
 
 Policy used on LocalNet (smaller than the Script-test policy because the harness has few actAs parties): Treasury 1-of-1, COO final sign-off 1-of-1, Compliance 1-of-1 when funded below 50%. The local `gcloud ssh` client exited with code 139 after the remote script printed its final PASS line; with `set -Eeuo pipefail` the remote script can only reach that line if every step passed. Sandbox parties are controlled by one developer: mechanics, not organizational independence.
 
+## Gate 8: authenticated identity and authorized writes, local (2026-09-25)
+
+Backend (`backend/src/auth.mjs`, `ledger.mjs`, `server.mjs`) and frontend Live ledger tab (`frontend/src/LiveLedger.jsx`, `api.js`). Sign-in is an interim local-account layer (scrypt hashes, `HttpOnly; SameSite=Strict` session cookie, CSRF token, per-account and per-IP throttling) that a CIP-0103 wallet sign-in can replace. Writes are off unless `WRITES_ENABLED=true`.
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Session and login hardening | Backend tests: generic error for bad password and unknown user; login refused without an allowed Origin; cookie is HttpOnly, SameSite=Strict, Path=/; no password hash in responses; 6th failed attempt on one account throttled; logout invalidates the session | PASS |
+| Per-IP lockout bug found and fixed | First run showed failed attempts against one account throttled every login from that IP (denial of service on shared networks). Throttle split: 5 per account, 30 per IP per 5 minutes | Fixed; tests pass |
+| Write preconditions | Missing CSRF token or Origin → 403; anonymous → 401; `WRITES_ENABLED` unset → 403; none of these reach the ledger | PASS |
+| Acting party comes only from the session | Approval request carrying forged `actAs`, `party`, `reviewer`, `batchId`, `policyVersion` is submitted with actAs = the session party and a target read back from the ledger | PASS |
+| Role and ownership checks | Approval for an unheld role → 403; batch not visible to the party → 404; revoking someone else's approval → 404; investor acting on another investor's entitlement → 404 with no ledger call; staff acting as investor → 403; only the batch proposer can propose finalization; duplicate approval CIDs rejected | PASS |
+| Governance binding | Confirm and execute go to the member's own DecMan node even when the request names another; only Alluvren action labels allowed; execute refused below threshold; confirmation set taken from DecMan state, ignoring client-supplied CIDs; Daml rejection surfaced as `Missing required approvals for role ComplianceReviewer` only | PASS |
+| Investor privacy | Investors get 403 on `/api/workflow`; `/api/me/records` returns only the session party's records | PASS |
+| Tests catch regressions | Mutations removing the approval role check, taking actAs from the body, taking the DecMan node from the body, skipping ownership lookup, skipping CSRF, and letting investors read the workflow each failed at least one test; code restored, 11/11 pass | PASS |
+| Frontend | Unit tests 6/6; production build; Playwright 9/9 including two new Live ledger journeys (sign-in error then success, approval sends the session CSRF token, Daml rejection shown; investor sees only own records, never requests the workflow, acknowledges once). Existing denied-access journey updated for the new sign-in guidance | PASS |
+| Honest labeling | Live ledger tab shows a `LOCALNET` strip ("Actions submit real Daml commands… No assets move") instead of the `DEMO` strip, and hides the demo-data PDF export | Visually checked at 1280×800 |
+
+Not yet verified: the authorized write paths against the real LocalNet (needs an accounts file with real hashes and the backend running next to LocalNet). Known limits: in-memory sessions; one shared ledger user can act for all configured parties, so backend checks are the party boundary until per-user ledger users exist; the operator account and one governance member map to the same sandbox party.
+
 ## Workspace checks (2026-09-24)
 
 | Check | Result |

@@ -29,6 +29,15 @@ test("reviewer signs in and approves with the session CSRF token; rejections sho
     proposals: [],
     activeContracts: { configured: true, redemptionBatches: [{ contractId: "batch-1", data: { batchId: "window-17", policyVersion: "demo-fund@v1", totalRequested: 1000, totalAllocated: 400, rows: [] } }], roleApprovals: [] },
     audit: [],
+    batchStatus: {
+      "batch-1": {
+        batchCid: "batch-1", kind: "policy", policyVisible: true, policyVersion: "demo-fund@v1", fundedBps: 4000, fundingThresholdBps: 5000, complete: false,
+        roles: [
+          { role: "TreasuryReviewer", quorum: 1, members: [TREAS], approvals: [], met: false, conditional: false, reasons: [] },
+          { role: "ComplianceReviewer", quorum: 1, members: ["compliance::1220"], approvals: [], met: false, conditional: true, reasons: ["funded below 50%"] },
+        ],
+      },
+    },
   }));
   let reject = false;
   await page.route("**/api/approvals", (route) => {
@@ -47,16 +56,20 @@ test("reviewer signs in and approves with the session CSRF token; rejections sho
   await page.getByLabel("Password").fill("right-password");
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText("window-17")).toBeVisible();
-  await expect(page.getByText("acting as party")).toBeVisible();
+  await expect(page.locator("#live-header-slot")).toContainText("treasury");
+  await expect(page.locator("#live-header-slot")).toContainText("LocalNet");
+  await expect(page.getByText("1 batch needs your Treasury approval")).toBeVisible();
+  await expect(page.getByText("Required because funded below 50%")).toBeVisible();
+  await expect(page.getByRole("img", { name: "Funded 40%; policy threshold 50%" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Approve as Treasury" }).click();
+  await page.getByRole("button", { name: "Approve" }).click();
   await expect(page.getByText("Treasury approval: done. The ledger accepted it.")).toBeVisible();
   expect(posts).toHaveLength(1);
   expect(posts[0].headers["x-alluvren-csrf"]).toBe("csrf-1");
   expect(posts[0].body).toEqual({ batchCid: "batch-1", role: "TreasuryReviewer" });
 
   reject = true;
-  await page.getByRole("button", { name: "Approve as Treasury" }).click();
+  await page.getByRole("button", { name: "Approve" }).click();
   await expect(page.getByText("Treasury approval rejected: Missing required approvals for role ComplianceReviewer")).toBeVisible();
 });
 
@@ -82,13 +95,14 @@ test("investor sees only their own records, never the batch list, and acknowledg
 
   await openLive(page);
   await expect(page.getByRole("heading", { name: "My redemption records" })).toBeVisible();
-  await expect(page.getByText("Allocated 400 units")).toBeVisible();
-  await expect(page.getByText("Outstanding 600 units")).toBeVisible();
+  await expect(page.locator(".live-row").filter({ hasText: /Allocated\s*400\s*units/ })).toBeVisible();
+  await expect(page.locator(".live-row").filter({ hasText: /Not funded\s*600\s*units/ })).toBeVisible();
+  await expect(page.getByText("You have 400 units to acknowledge")).toBeVisible();
   expect(workflowCalls).toBe(0);
   await expect(page.getByRole("heading", { name: "Batches" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Acknowledge" }).click();
   await expect(page.getByText("Acknowledgment: done. The ledger accepted it.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Acknowledge" })).toHaveCount(0);
-  await expect(page.getByText("400 units · window-17 · demo acknowledgment")).toBeVisible();
+  await expect(page.getByText("Acknowledged 400 units · window-17")).toBeVisible();
 });

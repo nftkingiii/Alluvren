@@ -578,6 +578,9 @@ function App() {
           </div>
         </div>
         <div className="header-right">
+          {tab === "live" ? (
+            <div id="live-header-slot" className="live-user" />
+          ) : (
           <button
             className="environment"
             aria-label="Demo workspace"
@@ -587,6 +590,7 @@ function App() {
             Demo · local
             <ChevronDown size={14} />
           </button>
+          )}
           <button
             className="icon-button help"
             aria-label="About this demo"
@@ -594,6 +598,7 @@ function App() {
           >
             <CircleHelp size={19} />
           </button>
+          {tab !== "live" && (
           <button
             className="account"
             onClick={() => setModal("persona")}
@@ -601,6 +606,7 @@ function App() {
           >
             {persona === "operator" ? "JD" : "AC"}
           </button>
+          )}
         </div>
       </header>
       <aside className="nav-band">
@@ -615,16 +621,21 @@ function App() {
           <img className="brand-mark-img" src="/alluvren-mark.png" alt="" />
           <span className="brand-name">alluvren<span className="brand-dot">.</span></span>
         </a>
-        <div className="nav-section-label">WORKSPACE</div>
+        <div className="nav-section-label">LIVE</div>
         <div className="nav-scroll" ref={navigation}>
           <nav aria-label="Main navigation">
             {(persona === "operator"
-              ? tabs
+              ? [tabs.find((t) => t.id === "live"), ...tabs.filter((t) => t.id !== "live")]
               : [
-                  { id: "investor", name: "My redemption", icon: Wallet },
                   { id: "live", name: "Live ledger", icon: Radio },
+                  { id: "investor", name: "My redemption", icon: Wallet },
                 ]
-            ).map((t) => (
+            ).flatMap((t, index) => [
+              index === 1 && (
+                <div key="walkthrough-label" className="nav-section-label nav-group-label" aria-hidden="true">
+                  WALKTHROUGH · SIMULATED
+                </div>
+              ),
               <button
                 key={t.id}
                 className={`nav-item ${tab === t.id ? "active" : ""}`}
@@ -647,8 +658,8 @@ function App() {
                     <span> to review</span>
                   </span>
                 )}
-              </button>
-            ))}
+              </button>,
+            ])}
           </nav>
         </div>
         {persona === "operator" && (
@@ -1433,9 +1444,11 @@ function App() {
           </span>
           <button onClick={() => setModal("connection")}>
             <span
-              className={`status-dot ${connection.phase === "connected" ? "" : "neutral"}`}
+              className={`status-dot ${connection.phase === "connected" || tab === "live" ? "" : "neutral"}`}
             />
-            {connection.phase === "connected"
+            {tab === "live"
+              ? "LocalNet ledger"
+              : connection.phase === "connected"
               ? "Read-only evidence connected"
               : connection.phase === "loading"
                 ? "Evidence refreshing"

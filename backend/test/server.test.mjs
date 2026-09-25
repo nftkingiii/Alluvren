@@ -108,11 +108,21 @@ function decman(node) {
   });
 }
 
-const batch = { governanceParty: GOV, proposer: OPERATOR, operator: OPERATOR, batchId: "window-17", policyVersion: "demo-fund@v1", policyCid: "policy-1" };
+const batch = {
+  governanceParty: GOV, proposer: OPERATOR, operator: OPERATOR, batchId: "window-17", policyVersion: "demo-fund@v1", policyCid: "policy-1",
+  fundReviewer: "fund-reviewer", treasuryReviewer: TREAS, totalRequested: "1000", totalAllocated: "400",
+  rows: [{ requestId: "r-a", investor: INV_A, requestedUnits: "1000", allocatedUnits: "400" }], exceptions: null,
+};
+const fundPolicy = {
+  fundId: "demo-fund", version: "1",
+  base: [{ role: "TreasuryReviewer", members: [TREAS], quorum: "1" }, { role: "FinalSignoff", members: [party("coo")], quorum: "1" }],
+  conditional: [{ trigger: { tag: "FundedBelowBps", value: "5000" }, requirement: { role: "ComplianceReviewer", members: [party("compliance")], quorum: "1" } }],
+};
 const acs = {
   [OPERATOR]: [{ templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: batch }],
   [TREAS]: [
     { templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: batch },
+    { templateId: `${PKG}:Alluvren.Redemption:FundPolicy`, contractId: "policy-1", createArgument: fundPolicy },
     { templateId: `${PKG}:Alluvren.Redemption:RoleApproval`, contractId: "approval-t", createArgument: { reviewer: TREAS, role: "TreasuryReviewer", target: { batchCid: "batch-1", batchId: "window-17" } } },
   ],
   [INV_A]: [
@@ -291,6 +301,13 @@ test("workflow requires a staff session; investors are refused", async () => {
   const payload = await response.json();
   assert.equal(payload.threshold, 2);
   assert.equal(payload.activeContracts.redemptionBatches[0].data.batchId, "window-17");
+  const status = payload.batchStatus["batch-1"];
+  assert.equal(status.fundedBps, 4000);
+  assert.equal(status.fundingThresholdBps, 5000);
+  assert.deepEqual(status.roles.map((r) => [r.role, r.met, r.conditional]), [
+    ["TreasuryReviewer", true, false], ["FinalSignoff", false, false], ["ComplianceReviewer", false, true],
+  ]);
+  assert.equal(status.complete, false);
   assert.equal(payload.audit[0].details.secret, undefined);
   assert.equal(JSON.stringify(payload).includes("private-created-event-blob"), false);
   assert.equal(JSON.stringify(payload).includes("must-not-leak"), false);

@@ -167,6 +167,16 @@ Backend (`backend/src/auth.mjs`, `ledger.mjs`, `server.mjs`) and frontend Live l
 
 Not yet verified: the authorized write paths against the real LocalNet (needs an accounts file with real hashes and the backend running next to LocalNet). Known limits: in-memory sessions; one shared ledger user can act for all configured parties, so backend checks are the party boundary until per-user ledger users exist; the operator account and one governance member map to the same sandbox party.
 
+## UI/UX and design pass (2026-09-25, local)
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Requirement status matches Daml | `backend/src/policy.mjs` mirrors `effectiveRequirements`/`triggerHolds`; tests cover 49.99% vs 50.00% funding, >80% concentration raising Treasury to 2, exception notes, distinct-member counting, legacy two-reviewer batches and hidden policies. Staff `/api/workflow` now includes `batchStatus` per batch (display only; the ledger re-checks at finalization) | PASS (backend 14/14) |
+| Live ledger fixes | Approve replaced by "You approved · Revoke" once your role approved; per-batch checklist with reasons ("Required because funded below 50%"); funding bar with the policy threshold marker; role-specific focus line; operator proposes with all valid approvals and is told what's missing; governance shows plain labels, confirmation progress, "you confirmed", and a muted Execute with the reason; investor records grouped by batch; account moved into the header with a LocalNet chip; footer reads "LocalNet ledger" | Playwright journeys updated and passing |
+| Design pass | Three theme layers collapsed into one token set; editorial serif (Newsreader) for page/section titles; no text below 12px (139 declarations raised); tabular numerals; gold reserved for primary actions; muted disabled state; content pinned to the top and capped at 1180px (fixes titles drifting 98–262px between tabs); identifiers no longer break mid-token; reduced-motion disables page-enter animation; nav grouped as Live / Walkthrough · simulated | Build and 9/9 Playwright pass |
+| Regression caught | Raising small text made the desk toolbar ~1px too wide at 320px; the existing narrow-screen journey failed until the toolbar was allowed to wrap | Fixed |
+| Visual review | Desktop 1440×900 and mobile 390×844 captures of desk, requests, activity and each Live ledger role; the expanded-sidebar overlay seen in full-page captures was measured as a capture artifact (rail stays 72px, 244px on hover) | Reviewed |
+
 ## Workspace checks (2026-09-24)
 
 | Check | Result |

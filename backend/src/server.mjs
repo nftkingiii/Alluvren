@@ -3,6 +3,7 @@ import { URL } from "node:url";
 import { timingSafeEqual } from "node:crypto";
 import { APPROVAL_ROLES, createAuth, hasRole, isStaff, loadAccounts, publicUser } from "./auth.mjs";
 import { createLedger, damlReason, templateName } from "./ledger.mjs";
+import { batchStatus, parseBatch, parsePolicy } from "./policy.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const MAX_BODY = 32 * 1024;
@@ -432,6 +433,23 @@ async function myRecords(session) {
   };
 }
 
+// What each batch still needs, from the batch and pinned FundPolicy visible to
+// the session party. Display only; the ledger re-checks at finalization.
+async function batchStatuses(session, snapshot) {
+  if (!ledger.configured) return {};
+  const contracts = await ledger.activeContracts(session.party);
+  const policies = new Map(contracts.filter((c) => templateName(c.templateId) === "FundPolicy").map((c) => [c.contractId, parsePolicy(c.argument)]));
+  const approvals = (snapshot.activeContracts?.roleApprovals ?? []).map((a) => ({
+    contractId: a.contractId, reviewer: a.data?.reviewer, role: a.data?.role, batchCid: a.data?.target?.batchCid,
+  }));
+  const out = {};
+  for (const c of contracts.filter((c) => templateName(c.templateId) === "RedemptionBatch")) {
+    const batch = parseBatch(c.argument);
+    out[c.contractId] = batchStatus({ batchCid: c.contractId, batch, policy: batch.policyCid ? policies.get(batch.policyCid) ?? null : null, approvals });
+  }
+  return out;
+}
+
 const WRITE_ROUTES = {
   "/api/approvals": ["approval.create", createApproval],
   "/api/approvals/revoke": ["approval.revoke", revokeApproval],
@@ -485,7 +503,9 @@ const server = http.createServer(async (req, res) => {
       session = requireSession(req);
       // Full batches list every investor's allocation; investors use /api/me/records.
       if (!isStaff(session)) throw httpError(403, "Investors can only view their own records");
-      return json(res, 200, await workflowSnapshot(), origin);
+      const snapshot = await workflowSnapshot();
+      snapshot.batchStatus = await batchStatuses(session, snapshot).catch(() => ({}));
+      return json(res, 200, snapshot, origin);
     }
     if (req.method === "GET" && url.pathname === "/api/me/records") {
       session = requireSession(req);

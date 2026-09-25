@@ -1,6 +1,9 @@
 module Alluvren.Redemption where
 
+import DA.Action (void, when)
+import DA.Foldable (forA_)
 import DA.List (unique, sortOn)
+import Alluvren.Claims
 import Governance.Action
 import Splice.Util (require)
 
@@ -132,6 +135,26 @@ template RedemptionBatch
             && treasuryApproval.role == TreasuryReviewer)
         require "Approvals must come from distinct parties"
           (fundApproval.reviewer /= treasuryApproval.reviewer)
+        -- Each investor receives private records for its own row only. The
+        -- batch is consumed by this choice, so these are created exactly once.
+        forA_ rows \r -> do
+          when (r.allocatedUnits > 0) do
+            void $ create ClaimEntitlement with
+              governanceParty
+              investor = r.investor
+              batchId
+              policyVersion
+              requestId = r.requestId
+              units = r.allocatedUnits
+          let outstanding = r.requestedUnits - r.allocatedUnits
+          when (outstanding > 0) do
+            void $ create OutstandingRedemption with
+              governanceParty
+              investor = r.investor
+              batchId
+              policyVersion
+              requestId = r.requestId
+              units = outstanding
         pure FinalizationRecord with
           batchId
           policyVersion

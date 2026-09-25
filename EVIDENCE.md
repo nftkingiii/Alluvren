@@ -79,6 +79,25 @@ The repeatable harness `infra/test-gate6-localnet.sh` submitted the workflow thr
 
 Gate 6 is complete for the LocalNet integration. It does not establish independent external operators, investor privacy, settlement, or authenticated frontend writes.
 
+## Gate 7 Daml-level investor outcomes (2026-09-25, local only)
+
+`alluvren-v1` 0.2.0 adds module `Alluvren.Claims` (`ClaimEntitlement`, `ClaimReceipt`, `OutstandingRedemption`, `OutstandingReleaseReceipt`). `RedemptionBatch_Finalize` keeps its signature and now also creates, for each allocation row, a private entitlement for allocated units (if > 0) and an outstanding record for unallocated units (if > 0). Each record is signed by the governance party and observed only by its investor. Acknowledgment and withdrawal are investor-controlled, consuming, and produce `DemoAcknowledgment` receipts; no asset moves and no share balance is restored (investor positions are Gate 2).
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Baseline reproducibility | Fresh `dpm build` (SDK 3.4.11, `~/dpm-sdk/windows-amd64/bin/dpm.exe`, not on PATH) of unmodified v1 0.1.0 reproduced SHA-256 `C8F112B0...4875` byte-for-byte; both existing Daml Script tests passed | PASS |
+| Smart-contract-upgrade compatibility | `daml.yaml` `upgrades: ../../artifacts/alluvren-v1-0.1.0.dar`; 0.2.0 builds cleanly. Negative control on a throwaway copy (adding a required field to `RoleApproval`) failed the upgrade typecheck as expected | PASS locally; LocalNet upgrade/vetting not yet run |
+| 0.2.0 DAR identity | `artifacts/alluvren-v1-0.2.0.dar`, SHA-256 `4696F1DE8C8CBF580D686014B6DC860E568DE9BD128D73766C84D7E1FDA23741`. Package ID not yet read back from a participant | Recorded |
+| Finalization creates private records (600/300/100 vs 500 → 300/150/50) | `testFinalizeCreatesPrivateInvestorRecords`: each investor sees exactly one entitlement and one outstanding record with correct units; allocated + outstanding = requested; batch archived | PASS |
+| Visibility and wrong-party actions | `testInvestorsCannotSeeOrActOnOthersRecords`: other investors, operator and both reviewers cannot fetch another investor's records; another investor cannot acknowledge or withdraw them | PASS |
+| Replay / duplicate prevention | `testAcknowledgeAndWithdrawOnlyOnce`: second acknowledgment and second withdrawal fail; receipts private to the investor and labelled `DemoAcknowledgment` | PASS |
+| Zero allocation | `testZeroAllocationCreatesNoEntitlement`: no zero-value entitlement; full request outstanding | PASS |
+| Atomicity on rejected finalization | `testRejectedFinalizationCreatesNoInvestorRecords`: wrong-role approval rejects finalization and leaves no investor records | PASS |
+| Tests detect a privacy leak | Mutation (entitlements observed by every batch investor) made three privacy/lifecycle tests fail; code restored and all 7 tests re-passed | PASS |
+| Backend exposure | Backend queries only `RedemptionBatch`/`RoleApproval` by package name `#alluvren-v1`; new investor templates are not exposed by existing read routes | Checked by source inspection; backend tests not rerun (no backend change) |
+
+Boundary: Daml Script visibility is not an authenticated Ledger API test. Separate-credential visibility (DESIGN P01/P02), the LocalNet upgrade to 0.2.0, and a governed finalization that creates these records on LocalNet remain unverified.
+
 ## Workspace checks (2026-09-24)
 
 | Check | Result |

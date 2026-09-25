@@ -1,0 +1,108 @@
+module Alluvren.Claims where
+
+-- Investor-private outcomes of a finalized redemption batch. Each record is
+-- signed by the governance party and observed only by its own investor, so
+-- other investors, the operator and the reviewers cannot see it.
+--
+-- These are demo records: an acknowledgment is not a payment and a release is
+-- not a restored share balance. No asset moves.
+
+data ReceiptMode
+  = DemoAcknowledgment
+  deriving (Eq, Show)
+
+-- The investor's allocated units from a finalized batch.
+template ClaimEntitlement
+  with
+    governanceParty : Party
+    investor : Party
+    batchId : Text
+    policyVersion : Text
+    requestId : Text
+    units : Int
+  where
+    signatory governanceParty
+    observer investor
+
+    ensure units > 0
+        && investor /= governanceParty
+        && batchId /= ""
+        && requestId /= ""
+
+    -- Consuming, so a second acknowledgment of the same entitlement fails.
+    choice ClaimEntitlement_Acknowledge : ContractId ClaimReceipt
+      controller investor
+      do
+        now <- getTime
+        create ClaimReceipt with
+          governanceParty
+          investor
+          batchId
+          policyVersion
+          requestId
+          units
+          acknowledgedAt = now
+          mode = DemoAcknowledgment
+
+-- Proof that the investor acknowledged an entitlement once. Not a payment
+-- receipt.
+template ClaimReceipt
+  with
+    governanceParty : Party
+    investor : Party
+    batchId : Text
+    policyVersion : Text
+    requestId : Text
+    units : Int
+    acknowledgedAt : Time
+    mode : ReceiptMode
+  where
+    signatory governanceParty, investor
+
+-- Requested units the batch could not fund. The investor withdraws them once.
+template OutstandingRedemption
+  with
+    governanceParty : Party
+    investor : Party
+    batchId : Text
+    policyVersion : Text
+    requestId : Text
+    units : Int
+  where
+    signatory governanceParty
+    observer investor
+
+    ensure units > 0
+        && investor /= governanceParty
+        && batchId /= ""
+        && requestId /= ""
+
+    -- Consuming, so the same outstanding units cannot be released twice.
+    choice OutstandingRedemption_Withdraw : ContractId OutstandingReleaseReceipt
+      controller investor
+      do
+        now <- getTime
+        create OutstandingReleaseReceipt with
+          governanceParty
+          investor
+          batchId
+          policyVersion
+          requestId
+          units
+          releasedAt = now
+          mode = DemoAcknowledgment
+
+-- Proof that outstanding units were released back to the investor. Investor
+-- positions (Gate 2) do not exist yet, so nothing is restored on-ledger.
+template OutstandingReleaseReceipt
+  with
+    governanceParty : Party
+    investor : Party
+    batchId : Text
+    policyVersion : Text
+    requestId : Text
+    units : Int
+    releasedAt : Time
+    mode : ReceiptMode
+  where
+    signatory governanceParty, investor

@@ -1,0 +1,239 @@
+module Alluvren.ClaimsTest where
+
+import Daml.Script
+import DA.Foldable (forA_)
+import DA.Time (addRelTime, seconds)
+import Alluvren.Claims
+import Alluvren.Redemption
+
+-- Gate 7: investor-private outcomes of finalization. These are Daml Script
+-- visibility and authorization checks; they do not replace authenticated
+-- Ledger API tests with separate participant credentials.
+
+data Setup = Setup
+  with
+    governance : Party
+    operator : Party
+    fund : Party
+    treasury : Party
+    alice : Party
+    bob : Party
+    carol : Party
+    batchCid : ContractId RedemptionBatch
+
+-- Canonical DESIGN.md example: requests 600/300/100 against 500 liquidity
+-- allocate 300/150/50, leaving 300/150/50 outstanding.
+setupFinalizedBatch : Script Setup
+setupFinalizedBatch = do
+  governance <- allocateParty "governance"
+  operator <- allocateParty "operator"
+  fund <- allocateParty "fund-reviewer"
+  treasury <- allocateParty "treasury-reviewer"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  carol <- allocateParty "carol"
+  now <- getTime
+  let expiry = addRelTime now (seconds 3600)
+      batchId = "window-007-batch-001"
+      policyVersion = "policy-v1"
+      rows =
+        [ AllocationRow "request-001" alice 600 300
+        , AllocationRow "request-002" bob 300 150
+        , AllocationRow "request-003" carol 100 50
+        ]
+  batchCid <- submit operator do
+    createCmd RedemptionBatch with
+      governanceParty = governance
+      proposer = operator
+      operator
+      fundReviewer = fund
+      treasuryReviewer = treasury
+      policyVersion
+      batchId
+      rows
+      totalRequested = 1000
+      totalAllocated = 500
+      recoveryDeadline = expiry
+  let target = ApprovalTarget with batchCid; batchId; policyVersion
+  fundApprovalCid <- submit fund do
+    createCmd RoleApproval with
+      governanceParty = governance
+      reviewer = fund
+      role = FundReviewer
+      target
+      expiresAt = expiry
+  treasuryApprovalCid <- submit treasury do
+    createCmd RoleApproval with
+      governanceParty = governance
+      reviewer = treasury
+      role = TreasuryReviewer
+      target
+      expiresAt = expiry
+  _ <- submit governance $ exerciseCmd batchCid RedemptionBatch_Finalize with
+    fundApprovalCid
+    treasuryApprovalCid
+  pure Setup with ..
+
+testFinalizeCreatesPrivateInvestorRecords : Script ()
+testFinalizeCreatesPrivateInvestorRecords = script do
+  s <- setupFinalizedBatch
+  let expected = [(s.alice, "request-001", 300, 300), (s.bob, "request-002", 150, 150), (s.carol, "request-003", 50, 50)]
+  forA_ expected \(investor, requestId, allocated, outstanding) -> do
+    entitlements <- query @ClaimEntitlement investor
+    case entitlements of
+      [(_, e)] -> do
+        assertMsg "entitlement belongs to investor" (e.investor == investor)
+        assertMsg "entitlement request" (e.requestId == requestId)
+        assertMsg "entitlement units" (e.units == allocated)
+      _ -> abort "each investor must see exactly one entitlement"
+    outstandings <- query @OutstandingRedemption investor
+    case outstandings of
+      [(_, o)] -> do
+        assertMsg "outstanding request" (o.requestId == requestId)
+        assertMsg "outstanding units" (o.units == outstanding)
+      _ -> abort "each investor must see exactly one outstanding record"
+
+  -- Conservation across all investor records, read as the governance party.
+  allEntitlements <- query @ClaimEntitlement s.governance
+  allOutstanding <- query @OutstandingRedemption s.governance
+  let allocatedTotal = sum (map ((.units) . snd) allEntitlements)
+      outstandingTotal = sum (map ((.units) . snd) allOutstanding)
+  assertMsg "allocated units are conserved" (allocatedTotal == 500)
+  assertMsg "requested units are conserved" (allocatedTotal + outstandingTotal == 1000)
+
+  -- The batch is consumed; replaying finalization cannot mint duplicates.
+  batch <- queryContractId s.operator s.batchCid
+  assertMsg "batch archived after finalization" (batch == None)
+
+testInvestorsCannotSeeOrActOnOthersRecords : Script ()
+testInvestorsCannotSeeOrActOnOthersRecords = script do
+  s <- setupFinalizedBatch
+  aliceEntitlements <- query @ClaimEntitlement s.alice
+  aliceOutstanding <- query @OutstandingRedemption s.alice
+  (aliceEntitlementCid, _) <- case aliceEntitlements of
+    [x] -> pure x
+    _ -> abort "alice entitlement missing"
+  (aliceOutstandingCid, _) <- case aliceOutstanding of
+    [x] -> pure x
+    _ -> abort "alice outstanding record missing"
+
+  -- Other investors, the operator and reviewers cannot see Alice's records.
+  forA_ [s.bob, s.carol, s.operator, s.fund, s.treasury] \other -> do
+    seenEntitlement <- queryContractId other aliceEntitlementCid
+    seenOutstanding <- queryContractId other aliceOutstandingCid
+    assertMsg "entitlement hidden from non-owner" (seenEntitlement == None)
+    assertMsg "outstanding record hidden from non-owner" (seenOutstanding == None)
+
+  -- Nor can another investor acknowledge or withdraw on Alice's behalf.
+  submitMustFail s.bob $ exerciseCmd aliceEntitlementCid ClaimEntitlement_Acknowledge
+  submitMustFail s.bob $ exerciseCmd aliceOutstandingCid OutstandingRedemption_Withdraw
+
+testAcknowledgeAndWithdrawOnlyOnce : Script ()
+testAcknowledgeAndWithdrawOnlyOnce = script do
+  s <- setupFinalizedBatch
+  entitlements <- query @ClaimEntitlement s.bob
+  outstandings <- query @OutstandingRedemption s.bob
+  (entitlementCid, _) <- case entitlements of
+    [x] -> pure x
+    _ -> abort "bob entitlement missing"
+  (outstandingCid, _) <- case outstandings of
+    [x] -> pure x
+    _ -> abort "bob outstanding record missing"
+
+  receiptCid <- submit s.bob $ exerciseCmd entitlementCid ClaimEntitlement_Acknowledge
+  submitMustFail s.bob $ exerciseCmd entitlementCid ClaimEntitlement_Acknowledge
+  receipt <- queryContractId s.bob receiptCid
+  case receipt of
+    Some r -> do
+      assertMsg "receipt units" (r.units == 150)
+      assertMsg "receipt is a demo acknowledgment" (r.mode == DemoAcknowledgment)
+    None -> abort "claim receipt missing"
+
+  releaseCid <- submit s.bob $ exerciseCmd outstandingCid OutstandingRedemption_Withdraw
+  submitMustFail s.bob $ exerciseCmd outstandingCid OutstandingRedemption_Withdraw
+  release <- queryContractId s.bob releaseCid
+  case release of
+    Some r -> assertMsg "release units" (r.units == 150)
+    None -> abort "release receipt missing"
+
+  -- Receipts stay private to their investor.
+  otherView <- queryContractId s.alice receiptCid
+  assertMsg "receipt hidden from other investors" (otherView == None)
+
+testZeroAllocationCreatesNoEntitlement : Script ()
+testZeroAllocationCreatesNoEntitlement = script do
+  governance <- allocateParty "governance"
+  operator <- allocateParty "operator"
+  fund <- allocateParty "fund-reviewer"
+  treasury <- allocateParty "treasury-reviewer"
+  dave <- allocateParty "dave"
+  now <- getTime
+  let expiry = addRelTime now (seconds 3600)
+  batchCid <- submit operator do
+    createCmd RedemptionBatch with
+      governanceParty = governance
+      proposer = operator
+      operator
+      fundReviewer = fund
+      treasuryReviewer = treasury
+      policyVersion = "policy-v1"
+      batchId = "window-007-batch-zero"
+      rows = [AllocationRow "request-010" dave 400 0]
+      totalRequested = 400
+      totalAllocated = 0
+      recoveryDeadline = expiry
+  let target = ApprovalTarget with batchCid; batchId = "window-007-batch-zero"; policyVersion = "policy-v1"
+  fundApprovalCid <- submit fund do
+    createCmd RoleApproval with
+      governanceParty = governance; reviewer = fund; role = FundReviewer; target; expiresAt = expiry
+  treasuryApprovalCid <- submit treasury do
+    createCmd RoleApproval with
+      governanceParty = governance; reviewer = treasury; role = TreasuryReviewer; target; expiresAt = expiry
+  _ <- submit governance $ exerciseCmd batchCid RedemptionBatch_Finalize with
+    fundApprovalCid
+    treasuryApprovalCid
+  entitlements <- query @ClaimEntitlement dave
+  outstandings <- query @OutstandingRedemption dave
+  assertMsg "no zero-value entitlement" (null entitlements)
+  case outstandings of
+    [(_, o)] -> assertMsg "all requested units outstanding" (o.units == 400)
+    _ -> abort "expected one outstanding record"
+
+testRejectedFinalizationCreatesNoInvestorRecords : Script ()
+testRejectedFinalizationCreatesNoInvestorRecords = script do
+  governance <- allocateParty "governance"
+  operator <- allocateParty "operator"
+  fund <- allocateParty "fund-reviewer"
+  treasury <- allocateParty "treasury-reviewer"
+  erin <- allocateParty "erin"
+  now <- getTime
+  let expiry = addRelTime now (seconds 3600)
+  batchCid <- submit operator do
+    createCmd RedemptionBatch with
+      governanceParty = governance
+      proposer = operator
+      operator
+      fundReviewer = fund
+      treasuryReviewer = treasury
+      policyVersion = "policy-v1"
+      batchId = "window-007-batch-reject"
+      rows = [AllocationRow "request-020" erin 200 100]
+      totalRequested = 200
+      totalAllocated = 100
+      recoveryDeadline = expiry
+  let target = ApprovalTarget with batchCid; batchId = "window-007-batch-reject"; policyVersion = "policy-v1"
+  fundApprovalCid <- submit fund do
+    createCmd RoleApproval with
+      governanceParty = governance; reviewer = fund; role = FundReviewer; target; expiresAt = expiry
+  -- The treasury reviewer signs with the wrong role, so finalization must fail
+  -- atomically: no entitlement or outstanding record may be left behind.
+  wrongTreasuryCid <- submit treasury do
+    createCmd RoleApproval with
+      governanceParty = governance; reviewer = treasury; role = FundReviewer; target; expiresAt = expiry
+  submitMustFail governance $ exerciseCmd batchCid RedemptionBatch_Finalize with
+    fundApprovalCid
+    treasuryApprovalCid = wrongTreasuryCid
+  entitlements <- query @ClaimEntitlement erin
+  outstandings <- query @OutstandingRedemption erin
+  assertMsg "rejected finalization leaves no entitlement" (null entitlements)
+  assertMsg "rejected finalization leaves no outstanding record" (null outstandings)

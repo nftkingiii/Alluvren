@@ -7,7 +7,7 @@ dependencies:
   - daml-stdlib
   - daml-script
 data-dependencies:
-  - ../alluvren-v0/.daml/dist/alluvren-v1-0.1.0.dar
+  - ../alluvren-v0/.daml/dist/alluvren-v1-0.2.0.dar
 build-options:
   - --target=2.2
   - -Wno-upgrade-interfaces

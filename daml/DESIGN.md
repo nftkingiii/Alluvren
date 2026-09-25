@@ -120,7 +120,7 @@ Daml Script authorization tests are not a substitute for separate authenticated 
 
 ## Policy-driven role governance (proposed next slice, 2026-09-25)
 
-Status: **implemented locally as `alluvren-v1` 0.3.0 (2026-09-25); P-01..P-09 pass as Daml Script tests; P-10 (LocalNet) not yet run.** Supersedes the fixed two-reviewer rule for new batches; legacy batches keep the 0.2.0 behavior plus the conflict-of-interest check.
+Status: **implemented as `alluvren-v1` 0.3.0 (2026-09-25); P-01..P-09 pass as Daml Script tests; P-10 passed on BitSafe LocalNet (see `EVIDENCE.md`).** Supersedes the fixed two-reviewer rule for new batches; legacy batches keep the 0.2.0 behavior plus the conflict-of-interest check.
 
 Implementation notes (deviations from the table below):
 - All policy types live in `Alluvren.Redemption`, because `RedemptionBatch` pins a `FundPolicy` and the policy uses `ApprovalRole`; separate modules would form an import cycle.

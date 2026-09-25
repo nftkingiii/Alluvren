@@ -131,7 +131,22 @@ Test identities: investors are two existing participant-1 parties with no Alluvr
 | Tests catch regressions | Mutations disabling the conflict-of-interest check, triggers, distinct-approver check, surplus rejection and exact-next-version rule each made at least one test fail; code restored, 12/12 pass | PASS |
 | Backend compatibility | Backend passes `RoleApproval.role` through as text, so new roles display without change; new batch fields are not projected | Source inspection |
 
-Boundary: BitSafe threshold behavior for `UpdateFundPolicy` and `FinalizePolicyRedemption` (P-10) is untested on LocalNet; tests execute the governable actions directly as the governance party.
+Boundary: the Script tests execute the governable actions directly as the governance party; the BitSafe threshold path is covered by P-10 below.
+
+## P-10 policy governance on BitSafe LocalNet (2026-09-25)
+
+VM started, services recovered (`infra/recover-localnet.sh` restarted Splice after the known Postgres DNS race; no volume reset), then stopped and verified `TERMINATED`.
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| 0.3.0 upgrade accepted by Canton | `infra/distribute-dar-localnet.sh`: workflow `dars-021a3b39dabfe4c5-dars-distribute-1790345349` completed; 8081, 8082, 8083 each report package `b2dcd98664024d1d872a6ec027e685400bfb568c0a6df35cf7322a333494a72d` vetted | PASS |
+| Policy creation needs the BitSafe threshold | `infra/test-policy-localnet.sh` run `p10-1790345489`: `UpdateFundPolicy` with one confirmation rejected (`Enough confirmations`); after two confirmations it executed and FundPolicy v1 became visible to its members (`00bd0d02d3ce...`) | PASS |
+| Risk-based requirement enforced after threshold | 40%-funded batch with Treasury + COO approvals: `FinalizePolicyRedemption` reached the threshold, then Daml rejected it with `Missing required approvals for role ComplianceReviewer`; no investor records created; proposal and confirmations cancelled | PASS |
+| Governed finalization with Compliance | Same batch with Treasury + COO + Compliance approvals: executed (HTTP 200, `Action executed successfully`); investor sees a 400-unit entitlement (`00332d6b20fd...`) and 600-unit outstanding record (`00675bd4751a...`) | PASS |
+| Policy change is governed and blocks pinned batches | `UpdateFundPolicy` v1→v2 executed after two confirmations; v1 no longer active, v2 active. A second batch pinned to v1 with all three approvals was rejected on execution after threshold (HTTP 500) | PASS; rejection reason text not captured by the harness (expected: superseded policy contract not found) |
+| Cleanup | Investor acknowledged/withdrew; blocked-batch approvals revoked; blocked batch recovered after its deadline; queries for all involved parties found no open batches, approvals, proposals or investor records for the run | PASS; FundPolicy v2 and demo receipts remain active by design |
+
+Policy used on LocalNet (smaller than the Script-test policy because the harness has few actAs parties): Treasury 1-of-1, COO final sign-off 1-of-1, Compliance 1-of-1 when funded below 50%. The local `gcloud ssh` client exited with code 139 after the remote script printed its final PASS line; with `set -Eeuo pipefail` the remote script can only reach that line if every step passed. Sandbox parties are controlled by one developer: mechanics, not organizational independence.
 
 ## Workspace checks (2026-09-24)
 

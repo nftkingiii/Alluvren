@@ -1,0 +1,10 @@
+node_modules/
+.daml/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+HACK_EVENT_GATE.json
+internal/
+decentralization-manager/

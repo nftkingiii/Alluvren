@@ -1,0 +1,186 @@
+module Alluvren.Redemption where
+
+import DA.List (unique, sortOn)
+import Governance.Action
+import Splice.Util (require)
+
+-- The business roles are deliberately explicit. BitSafe's member threshold is
+-- a separate control exercised by GovernanceRules around FinalizeRedemption.
+data ApprovalRole
+  = FundReviewer
+  | TreasuryReviewer
+  deriving (Eq, Show)
+
+data AllocationRow = AllocationRow
+  with
+    requestId : Text
+    investor : Party
+    requestedUnits : Int
+    allocatedUnits : Int
+  deriving (Eq, Show)
+
+data RedemptionStatus
+  = BatchFrozen
+  | BatchFinalized
+  deriving (Eq, Show)
+
+data ApprovalTarget = ApprovalTarget
+  with
+    batchCid : ContractId RedemptionBatch
+    batchId : Text
+    policyVersion : Text
+  deriving (Eq, Show)
+
+data FinalizationRecord = FinalizationRecord
+  with
+    batchId : Text
+    policyVersion : Text
+    totalRequested : Int
+    totalAllocated : Int
+    finalizedAt : Time
+  deriving (Eq, Show)
+
+-- A reviewer signs an approval. The governance party can consume it during
+-- finalization because it is an observer and the choice is governance-party
+-- controlled; the reviewer is still authenticated by the signatory field.
+template RoleApproval
+  with
+    governanceParty : Party
+    reviewer : Party
+    role : ApprovalRole
+    target : ApprovalTarget
+    expiresAt : Time
+  where
+    signatory reviewer
+    observer governanceParty
+
+    ensure reviewer /= governanceParty
+        && target.batchId /= ""
+
+    choice RoleApproval_Consume : RoleApproval
+      controller governanceParty
+      do
+        now <- getTime
+        require "Role approval has expired" (now < expiresAt)
+        pure this
+
+    choice RoleApproval_Revoke : ()
+      controller reviewer
+      do pure ()
+
+-- This is an immutable, frozen allocation. It is intentionally not a token or
+-- bank balance: the MVP proves governed decision-making before settlement.
+template RedemptionBatch
+  with
+    governanceParty : Party
+    proposer : Party
+    operator : Party
+    fundReviewer : Party
+    treasuryReviewer : Party
+    policyVersion : Text
+    batchId : Text
+    rows : [AllocationRow]
+    totalRequested : Int
+    totalAllocated : Int
+    recoveryDeadline : Time
+  where
+    signatory proposer
+    observer governanceParty, operator, fundReviewer, treasuryReviewer
+
+    ensure batchId /= ""
+        && policyVersion /= ""
+        && proposer /= governanceParty
+        && operator /= governanceParty
+        && fundReviewer /= treasuryReviewer
+        && proposer /= fundReviewer
+        && proposer /= treasuryReviewer
+        && fundReviewer /= governanceParty
+        && treasuryReviewer /= governanceParty
+        && not (null rows)
+        && all (\r -> r.requestId /= "" && r.requestedUnits > 0
+          && r.allocatedUnits >= 0 && r.allocatedUnits <= r.requestedUnits) rows
+        && totalRequested >= 0
+        && totalRequested <= 1000000000
+        && totalAllocated >= 0
+        && totalAllocated <= totalRequested
+        && totalAllocated == sum (map (.allocatedUnits) rows)
+        && totalRequested == sum (map (.requestedUnits) rows)
+        && unique (map (.requestId) rows)
+        && validAllocation totalRequested totalAllocated rows
+
+    choice RedemptionBatch_Finalize : FinalizationRecord
+      with
+        fundApprovalCid : ContractId RoleApproval
+        treasuryApprovalCid : ContractId RoleApproval
+      controller governanceParty
+      do
+        now <- getTime
+        require "Batch execution deadline has passed" (now < recoveryDeadline)
+        fundApproval <- exercise fundApprovalCid RoleApproval_Consume
+        treasuryApproval <- exercise treasuryApprovalCid RoleApproval_Consume
+        require "Fund approval targets the wrong batch"
+          (fundApproval.target == ApprovalTarget with batchCid = self; batchId; policyVersion)
+        require "Treasury approval targets the wrong batch"
+          (treasuryApproval.target == ApprovalTarget with batchCid = self; batchId; policyVersion)
+        require "Approval governance party mismatch"
+          (fundApproval.governanceParty == governanceParty
+            && treasuryApproval.governanceParty == governanceParty)
+        require "Fund reviewer approval is not from the configured reviewer"
+          (fundApproval.reviewer == fundReviewer && fundApproval.role == FundReviewer)
+        require "Treasury reviewer approval is not from the configured reviewer"
+          (treasuryApproval.reviewer == treasuryReviewer
+            && treasuryApproval.role == TreasuryReviewer)
+        require "Approvals must come from distinct parties"
+          (fundApproval.reviewer /= treasuryApproval.reviewer)
+        pure FinalizationRecord with
+          batchId
+          policyVersion
+          totalRequested
+          totalAllocated
+          finalizedAt = now
+
+    choice RedemptionBatch_RecoverExpired : ()
+      controller operator
+      do
+        now <- getTime
+        require "Batch recovery deadline has not passed" (now >= recoveryDeadline)
+
+-- Largest remainder allocation; equal remainders use request ID ascending.
+-- Bounded total units keep the integer product below the Int limit.
+validAllocation : Int -> Int -> [AllocationRow] -> Bool
+validAllocation requested allocated rows =
+  if requested <= 0 then False else
+    let product r = r.requestedUnits * allocated
+        base r = product r / requested
+        ranked = sortOn (\r -> (negate (product r - base r * requested), r.requestId)) rows
+        remainder = allocated - sum (map base rows)
+        winners = map (.requestId) (take remainder ranked)
+    in all (\r -> r.allocatedUnits == base r + (if elem r.requestId winners then 1 else 0)) rows
+
+-- DecMan discovers this proposal through Governance.Action. GovernanceRules
+-- confirms and executes it by ContractId; BitSafe threshold approval is outside
+-- this template and remains independently enforced by GovernanceRules.
+template FinalizeRedemption
+  with
+    governanceParty : Party
+    proposer : Party
+    batchCid : ContractId RedemptionBatch
+    fundApprovalCid : ContractId RoleApproval
+    treasuryApprovalCid : ContractId RoleApproval
+    description : Text
+  where
+    signatory proposer
+    observer governanceParty
+
+    interface instance GovernableAction for FinalizeRedemption where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "FinalizeRedemption"
+        description
+
+      executeImpl = do
+        _ <- exercise batchCid RedemptionBatch_Finalize with
+          fundApprovalCid
+          treasuryApprovalCid
+        pure ()

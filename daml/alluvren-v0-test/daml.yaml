@@ -1,0 +1,16 @@
+sdk-version: 3.4.11
+name: alluvren-v0-test
+version: 0.1.0
+source: daml
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+data-dependencies:
+  - ../alluvren-v0/.daml/dist/alluvren-v1-0.1.0.dar
+build-options:
+  - --target=2.2
+  - -Wno-upgrade-interfaces
+  - -Wno-template-interface-depends-on-daml-script
+  - --ghc-option=-Wunused-binds
+  - --ghc-option=-Wunused-matches

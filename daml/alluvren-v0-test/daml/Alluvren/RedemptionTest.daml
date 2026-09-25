@@ -1,0 +1,96 @@
+module Alluvren.RedemptionTest where
+
+import Daml.Script
+import DA.Time (addRelTime, seconds)
+import Alluvren.Redemption
+
+-- Local contract proof. BitSafe threshold confirmation is tested separately
+-- through GovernanceRules/DecMan as an external boundary.
+testWrongBusinessRoleRejectedThenCorrectRolesFinalize : Script ()
+testWrongBusinessRoleRejectedThenCorrectRolesFinalize = script do
+  governance <- allocateParty "governance"
+  proposer <- allocateParty "operator"
+  fund <- allocateParty "fund-reviewer"
+  treasury <- allocateParty "treasury-reviewer"
+  investor <- allocateParty "investor"
+  now <- getTime
+
+  let rows = [AllocationRow with
+        requestId = "request-001"
+        investor
+        requestedUnits = 600
+        allocatedUnits = 300]
+
+  batchCid <- submit proposer do
+    createCmd RedemptionBatch with
+      governanceParty = governance
+      proposer
+      operator = proposer
+      fundReviewer = fund
+      treasuryReviewer = treasury
+      policyVersion = "policy-v1"
+      batchId = "window-001-batch-001"
+      rows
+      totalRequested = 600
+      totalAllocated = 300
+      recoveryDeadline = addRelTime now (seconds 3600)
+
+  let target = ApprovalTarget with batchCid; batchId = "window-001-batch-001"; policyVersion = "policy-v1"
+
+  fundApprovalCid <- submit fund do
+    createCmd RoleApproval with
+      governanceParty = governance
+      reviewer = fund
+      role = FundReviewer
+      target
+      expiresAt = addRelTime now (seconds 3600)
+
+  wrongTreasuryCid <- submit treasury do
+    createCmd RoleApproval with
+      governanceParty = governance
+      reviewer = treasury
+      role = FundReviewer
+      target
+      expiresAt = addRelTime now (seconds 3600)
+
+  submitMustFail governance $ exerciseCmd batchCid RedemptionBatch_Finalize with
+    fundApprovalCid
+    treasuryApprovalCid = wrongTreasuryCid
+
+  treasuryApprovalCid <- submit treasury do
+    createCmd RoleApproval with
+      governanceParty = governance
+      reviewer = treasury
+      role = TreasuryReviewer
+      target
+      expiresAt = addRelTime now (seconds 3600)
+
+  original <- queryContractId proposer batchCid
+  case original of
+    None -> abort "Missing batch"
+    Some batch -> do
+      replacement <- submit proposer (createCmd batch)
+      submitMustFail governance $ exerciseCmd replacement RedemptionBatch_Finalize with
+        fundApprovalCid
+        treasuryApprovalCid
+      submitMustFail proposer $ createCmd (batch with fundReviewer = proposer)
+      let invalidRow = AllocationRow "request-001" investor 600 (-1)
+      submitMustFail proposer $ createCmd (batch with rows = [invalidRow])
+
+  _ <- submit governance $ exerciseCmd batchCid RedemptionBatch_Finalize with
+    fundApprovalCid
+    treasuryApprovalCid
+  submitMustFail governance $ exerciseCmd batchCid RedemptionBatch_Finalize with
+    fundApprovalCid
+    treasuryApprovalCid
+  pure ()
+
+testProportionalPolicy : Script ()
+testProportionalPolicy = script do
+  investor <- allocateParty "allocation-investor"
+  let row id requested allocated = AllocationRow id investor requested allocated
+  assert (validAllocation 1000 600 [row "a" 500 300, row "b" 300 180, row "c" 200 120])
+  assert (not (validAllocation 1000 600 [row "a" 500 400, row "b" 300 100, row "c" 200 100]))
+  assert (validAllocation 3 2 [row "c" 1 0, row "b" 1 1, row "a" 1 1])
+  assert (validAllocation 1000 0 [row "a" 500 0, row "b" 500 0])
+  assert (not (validAllocation 0 0 []))

@@ -185,6 +185,29 @@ LocalNet verification: see the next section. Known limits: in-memory sessions; o
 
 Leftovers: two earlier interrupted runs (`g8-1790354711`, `g8-1790354785`) left their FundPolicy, an unfinalized batch and their approvals on LocalNet (approvals expire after 30 minutes; their failed proposals were cancelled). Still unverified: per-user ledger credentials (one shared ledger user acts for all parties, so backend checks are the party boundary); the Live ledger UI against LocalNet in a browser (the run drove the same HTTP API, not the UI).
 
+## Distributed hosting: node outage on BitSafe LocalNet (2026-09-25)
+
+`infra/test-outage-localnet.sh` takes a hosting node offline during real Alluvren governance. Topology: the governance party `demo-party::1220ebce…` is hosted with confirmation permission on three participants, and GovernanceRules has three members with threshold 2.
+
+| Node | DecMan | Participant | Governance member |
+| --- | --- | --- | --- |
+| 1 | `decman-1` :8081 | `app-provider` (`participant::12208876…`) | P2 `party-39699690…` |
+| 2 | `decman-2` :8082 | `app-user` (`participant::12201127…`), also hosts the Alluvren operator, reviewer and investor parties | P1 `party-2db40dfe…` |
+| 3 | `decman-3` :8083 | `sv` (`sv::1220acd5…`) | P3 `party-effd301f…` |
+
+"Offline" for node 1 means its participant disconnected from the synchronizer (Canton admin API, `synchronizers.disconnect_all`) and its DecMan container stopped.
+
+| Check | Evidence (run `outage-1790356067`) | Result |
+| --- | --- | --- |
+| Node 1 offline | Participant reported 0 connected synchronizers; DecMan 8081 unreachable; node 1's ledger end frozen at offset 2941 | PASS |
+| Governance continues on 2 of 3 | With node 1 offline, a governed FundPolicy creation and a governed batch finalization were confirmed by P1 (node 2) and P3 (node 3) and executed from node 3; the investor received 400 allocated / 600 outstanding | PASS |
+| Hosting | Node 3 hosted the new governance-party records; node 1's ledger stayed at offset 2941 without them | PASS |
+| One member left cannot act | With node 3's DecMan also stopped, a second finalization got 1 confirmation (node 2) and execution was refused (`Enough confirmations` check); no investor records created | PASS |
+| Recovery and catch-up | Node 1 reconnected about 30 s after restart; its ledger end moved 2941 → 2982 and it hosted the records created while it was offline. Node 1's member (P2) confirmed the waiting proposal and node 1 executed it; investor records created. Afterwards all three DecMan nodes reported the Noise mesh as `CurrentNode`/`Connected` | PASS |
+| Safety and cleanup | An EXIT trap reconnects node 1 and restarts both DecMan nodes on any failure; investor records acknowledged and withdrawn; temporary console files removed; VM stopped and verified `TERMINATED` | PASS |
+
+Not shown: two hosting participants offline at once (node 3's participant stayed connected in the one-member case, so that case exercises the governance threshold, not the ledger's hosting threshold); disconnecting the SV participant was avoided because it also runs LocalNet's Super Validator automation. Independence: all three nodes run on one VM under one developer; this demonstrates hosting and threshold mechanics, not independent operators.
+
 ## UI/UX and design pass (2026-09-25, local)
 
 | Check | Evidence | Result |

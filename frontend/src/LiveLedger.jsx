@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { CheckCircle2, Clock3, Layers3, LockKeyhole, LogOut, RefreshCw, ShieldCheck, Wallet } from "lucide-react";
 import { api, restoreSession, signIn, signOut } from "./api.js";
+import { DEMO_VIDEO_URL, REPO_URL } from "./publicDemo.js";
 
 const ROLE_LABELS = {
   FundReviewer: "Fund review",
@@ -125,6 +126,24 @@ function focusLines({ roles, user, statuses, batches, proposals, records, sealed
     if (toExecute) lines.push(<><strong>{plural(toExecute, "proposal")}</strong> {toExecute === 1 ? "is" : "are"} ready to execute</>);
   }
   return lines;
+}
+
+// Shown instead of the Live ledger on public builds, which have no LocalNet.
+export function LiveLedgerNotice() {
+  return (
+    <section className="card live-notice">
+      <h2><ShieldCheck size={18} /> The live ledger runs on BitSafe LocalNet</h2>
+      <p className="live-lede">
+        Every action on this tab is a real Daml command on a three-node BitSafe LocalNet, so it runs next to the nodes rather than on this public site.
+        The walkthrough tabs show the same product with simulated data.
+      </p>
+      <div className="live-actions">
+        {DEMO_VIDEO_URL && <a className="button primary" href={DEMO_VIDEO_URL} target="_blank" rel="noreferrer">Watch the live demo</a>}
+        <a className={`button ${DEMO_VIDEO_URL ? "" : "primary"}`} href={`${REPO_URL}/blob/main/REPRODUCE.md`} target="_blank" rel="noreferrer">Run it yourself</a>
+        <a className="button quiet" href={REPO_URL} target="_blank" rel="noreferrer">Source on GitHub</a>
+      </div>
+    </section>
+  );
 }
 
 export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {

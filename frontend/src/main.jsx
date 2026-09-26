@@ -35,7 +35,8 @@ import {
   Radio,
 } from "lucide-react";
 import { ConnectionPanel, useGovernanceEvidence } from "./ConnectionPanel.jsx";
-import { LiveLedger } from "./LiveLedger.jsx";
+import { LiveLedger, LiveLedgerNotice } from "./LiveLedger.jsx";
+import { PUBLIC_DEMO } from "./publicDemo.js";
 import {
   allocate,
   investors,
@@ -767,8 +768,10 @@ function App() {
         {tab === "live" ? (
           <div className="demo-strip">
             <span>
-              <span className="demo-tag">LOCALNET</span>Actions submit real Daml
-              commands to BitSafe LocalNet. No assets move.
+              <span className="demo-tag">LOCALNET</span>
+              {PUBLIC_DEMO
+                ? "The live ledger runs on BitSafe LocalNet, not on this public site."
+                : "Actions submit real Daml commands to BitSafe LocalNet. No assets move."}
             </span>
           </div>
         ) : (
@@ -1322,7 +1325,7 @@ function App() {
             </section>
           )}
 
-          {tab === "live" && <LiveLedger notify={announce} />}
+          {tab === "live" && (PUBLIC_DEMO ? <LiveLedgerNotice /> : <LiveLedger notify={announce} />)}
 
           {persona === "investor" && tab !== "live" &&
             (() => {

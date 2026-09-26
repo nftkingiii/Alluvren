@@ -58,7 +58,8 @@ export const api = {
   revoke: (approvalCid) => request("/api/approvals/revoke", { method: "POST", body: { approvalCid } }),
   acknowledge: (entitlementCid) => request("/api/claims/acknowledge", { method: "POST", body: { entitlementCid } }),
   withdraw: (outstandingCid) => request("/api/outstanding/withdraw", { method: "POST", body: { outstandingCid } }),
-  proposeFinalize: (batchCid, approvalCids) => request("/api/proposals/finalize", { method: "POST", body: { batchCid, approvalCids } }),
+  // The server proposes with the approvals valid at that moment.
+  proposeFinalize: (batchCid) => request("/api/proposals/finalize", { method: "POST", body: { batchCid } }),
   confirm: (proposalCid) => request("/api/governance/confirm", { method: "POST", body: { proposalCid } }),
   execute: (proposalCid) => request("/api/governance/execute", { method: "POST", body: { proposalCid } }),
   distributeSealed: (finalizationCid) => request("/api/sealed/distribute", { method: "POST", body: { finalizationCid } }),

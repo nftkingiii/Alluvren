@@ -62,15 +62,55 @@ test("reviewer signs in and approves with the session CSRF token; rejections sho
   await expect(page.getByText("Required because funded below 50%")).toBeVisible();
   await expect(page.getByRole("img", { name: "Funded 40%; policy threshold 50%" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Approve" }).click();
-  await expect(page.getByText("Treasury approval: done. The ledger accepted it.")).toBeVisible();
-  expect(posts).toHaveLength(1);
-  expect(posts[0].headers["x-alluvren-csrf"]).toBe("csrf-1");
-  expect(posts[0].body).toEqual({ batchCid: "batch-1", role: "TreasuryReviewer" });
-
+  // A rejected action can be tried again...
   reject = true;
   await page.getByRole("button", { name: "Approve" }).click();
   await expect(page.getByText("Treasury approval rejected: Missing required approvals for role ComplianceReviewer")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve" })).toBeEnabled();
+
+  // ...an accepted one runs once and stays disabled.
+  reject = false;
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByText("Treasury approval: done. The ledger accepted it.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approved" })).toBeDisabled();
+  expect(posts).toHaveLength(2);
+  expect(posts[1].headers["x-alluvren-csrf"]).toBe("csrf-1");
+  expect(posts[1].body).toEqual({ batchCid: "batch-1", role: "TreasuryReviewer" });
+});
+
+test("operator's double click proposes once, with the approvals the server counts", async ({ page }) => {
+  const OP = `operator::1220${"d".repeat(64)}`;
+  const proposals = [];
+  let proposed = false;
+  const role = (name, cid) => ({ role: name, quorum: 1, members: ["m::1220"], approvals: [{ approvalCid: cid, reviewer: "m::1220" }], met: true, conditional: false, reasons: [] });
+  await page.route("**/healthz", (route) => json(route, { ok: true, environment: "LocalNet", writesEnabled: true, nodes: [] }));
+  await page.route("**/api/auth/me", (route) => json(route, { user: { username: "operator", party: OP, roles: ["Operator"] }, csrfToken: "csrf-4" }));
+  await page.route("**/api/me/records", (route) => json(route, { entitlements: [], outstanding: [], receipts: [], releases: [], approvals: [] }));
+  await page.route("**/api/workflow", (route) => json(route, {
+    threshold: 2, proposals: [], audit: [],
+    activeContracts: { configured: true, roleApprovals: [], sealedFinalizations: [],
+      redemptionBatches: [{ contractId: "batch-2", data: { batchId: "window-19", policyVersion: "demo-fund@v1", totalRequested: 1000, totalAllocated: 400, rows: [] } }] },
+    batchStatus: { "batch-2": {
+      batchCid: "batch-2", kind: "policy", policyVisible: true, policyVersion: "demo-fund@v1", fundedBps: 4000, fundingThresholdBps: 5000, complete: true,
+      roles: [role("TreasuryReviewer", "a-t"), role("FinalSignoff", "a-f"), role("ComplianceReviewer", "a-c")],
+      openProposals: proposed ? 1 : 0, currentProposed: proposed,
+    } },
+  }));
+  await page.route("**/api/proposals/finalize", async (route) => {
+    proposals.push(route.request().postDataJSON());
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    proposed = true;
+    return json(route, { ok: true, proposalCid: "prop-1", approvalCount: 3, complete: true });
+  });
+
+  await openLive(page);
+  // Move off the navigation, which expands over the content while hovered.
+  await page.mouse.move(900, 400);
+  await page.getByRole("button", { name: "Propose with 3 approvals" }).dblclick();
+  await expect(page.getByText("Finalization proposal with 3 approvals: done. The ledger accepted it.")).toBeVisible();
+  expect(proposals).toEqual([{ batchCid: "batch-2" }]);
+  await expect(page.getByRole("button", { name: "Proposed" })).toBeDisabled();
+  await expect(page.getByText("A proposal with these 3 approvals is open.")).toBeVisible();
 });
 
 test("investor sees only their own records, never the batch list, and acknowledges once", async ({ page }) => {

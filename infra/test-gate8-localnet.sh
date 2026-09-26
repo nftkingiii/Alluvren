@@ -121,7 +121,9 @@ MINE=$(body "$(get treasury /api/me/records)" | jq -r --arg a "$A_T" '[.approval
 pass "approvals created on-ledger as the signed-in reviewers ($A_T, $A_F); forged actAs ignored"
 
 say 'Operator proposes without Compliance; members confirm; execution rejected with the Daml reason'
-R=$(post operator /api/proposals/finalize "$(jq -cn --arg b "$BATCH" --arg a "$A_T" --arg f "$A_F" '{batchCid:$b,approvalCids:[$a,$f]}')"); expect "$R" 200 'first proposal'
+R=$(post operator /api/proposals/finalize "$(jq -cn --arg b "$BATCH" '{batchCid:$b}')"); expect "$R" 200 'first proposal'
+[[ $(body "$R" | jq -r '.approvalCount') == 2 ]] || fail "first proposal should carry the 2 valid approvals: $(body "$R")"
+expect "$(post operator /api/proposals/finalize "$(jq -cn --arg b "$BATCH" '{batchCid:$b}')")" 409 'repeat proposal with the same approvals'
 PROP_A=$(body "$R" | jq -r '.proposalCid')
 confirm_as() {
   local r
@@ -147,7 +149,8 @@ for _ in $(seq 1 10); do
   [[ $(echo "$STATUS" | jq -r '.complete') == true ]] && break; sleep 2
 done
 [[ $(echo "$STATUS" | jq -r '.complete') == true ]] || fail "batch should now be complete: $(echo "$STATUS" | jq -c '[.roles[] | {role, met, approvals}]')"
-R=$(post operator /api/proposals/finalize "$(jq -cn --arg b "$BATCH" --arg a "$A_T" --arg f "$A_F" --arg c "$A_C" '{batchCid:$b,approvalCids:[$a,$f,$c]}')"); expect "$R" 200 'second proposal'
+R=$(post operator /api/proposals/finalize "$(jq -cn --arg b "$BATCH" '{batchCid:$b}')"); expect "$R" 200 'second proposal'
+[[ $(body "$R" | jq -r '.approvalCount') == 3 ]] || fail "second proposal should carry all 3 valid approvals: $(body "$R")"
 PROP_B=$(body "$R" | jq -r '.proposalCid')
 confirm_as member-1 "$PROP_B"
 expect "$(post member-1 /api/governance/execute "$(jq -cn --arg p "$PROP_B" '{proposalCid:$p}')")" 409 'execute below threshold'

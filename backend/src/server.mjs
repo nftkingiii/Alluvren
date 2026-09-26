@@ -362,6 +362,11 @@ async function createApproval(session, body) {
   requireRole(session, role);
   const batch = await ownVisibleContract(session, body.batchCid, "RedemptionBatch");
   if (batch.argument.governanceParty !== governancePartyId) throw httpError(409, "Batch belongs to a different governance party");
+  const now = Date.now();
+  const mine = (await ledger.activeContracts(session.party)).some((c) => templateName(c.templateId) === "RoleApproval"
+    && c.argument.reviewer === session.party && c.argument.role === role
+    && c.argument.target?.batchCid === batch.contractId && approvalLive(c.argument.expiresAt, now));
+  if (mine) throw httpError(409, "You have already approved this batch for that role");
   const expiresAt = new Date(Date.now() + APPROVAL_TTL_MS).toISOString();
   const result = await ledger.submit(session.party, [{ CreateCommand: {
     templateId: templateId("Redemption", "RoleApproval"),
@@ -441,14 +446,17 @@ async function distributeSealed(session, body) {
 async function proposeFinalize(session, body) {
   requireWrites();
   requireRole(session, "Operator");
-  const approvalCids = body.approvalCids;
-  if (!Array.isArray(approvalCids) || approvalCids.length < 1 || approvalCids.length > 10
-    || approvalCids.some((cid) => !validId(cid)) || new Set(approvalCids).size !== approvalCids.length) {
-    throw httpError(400, "approvalCids must be 1-10 distinct contract IDs");
-  }
   const batch = await ownVisibleContract(session, body.batchCid, "RedemptionBatch");
   if (batch.argument.proposer !== session.party) throw httpError(403, "Only the batch proposer can propose its finalization");
   if (!batch.argument.policyCid) throw httpError(400, "Legacy two-reviewer batches are finalized through the operator runbook");
+  // The approvals valid now, read from the ledger rather than taken from the
+  // request: a page loaded before an approval arrived (or expired) would
+  // otherwise propose a stale set.
+  const status = ledgerStatuses(await ledger.activeContracts(governancePartyId))[batch.contractId];
+  const approvalCids = status ? status.roles.flatMap((r) => r.approvals.map((a) => a.approvalCid)) : [];
+  if (approvalCids.length === 0) throw httpError(409, "This batch has no valid approvals yet");
+  const what = `${String(batch.argument.batchId).slice(0, 120)} with ${approvalCids.length} approval${approvalCids.length === 1 ? "" : "s"}`;
+  if (status.currentProposed) throw httpError(409, `A proposal to finalize ${what} is already open`);
   const result = await ledger.submit(session.party, [{ CreateCommand: {
     templateId: templateId("Redemption", "FinalizePolicyRedemption"),
     createArguments: {
@@ -457,11 +465,11 @@ async function proposeFinalize(session, body) {
       batchCid: batch.contractId,
       approvalCids,
       // The approval count tells a corrected proposal apart from a rejected one.
-      description: `Finalize ${String(batch.argument.batchId).slice(0, 120)} with ${approvalCids.length} approval${approvalCids.length === 1 ? "" : "s"}`,
+      description: `Finalize ${what}`,
     },
   } }]);
   const proposalCid = result.created.find((event) => templateName(event.templateId) === "FinalizePolicyRedemption")?.contractId ?? null;
-  return { proposalCid, updateId: result.updateId };
+  return { proposalCid, approvalCount: approvalCids.length, complete: status.complete, updateId: result.updateId };
 }
 
 async function governedProposal(session, proposalCid) {
@@ -478,6 +486,9 @@ async function governanceConfirm(session, body) {
   requireWrites();
   requireRole(session, "GovernanceMember");
   const { proposal, rules } = await governedProposal(session, body.proposalCid);
+  if ((proposal.confirmations ?? []).some((c) => c.confirming_party === session.party)) {
+    throw httpError(409, "You have already confirmed this proposal");
+  }
   await upstream(session.decmanNode, "/governance/confirm", { method: "POST", body: JSON.stringify({
     party_id: governancePartyId, rules_contract_id: rules, proposal_cid: proposal.proposal_cid, action: fixedAction(), governance_type: "core_domain",
   }) });
@@ -525,24 +536,49 @@ async function myRecords(session) {
   };
 }
 
-// What each batch still needs, from the batches and pinned FundPolicies the
-// governance party sees (staff already read every batch through /api/workflow,
-// and governance members need this before they execute). Display only; the
-// ledger re-checks at finalization.
-async function batchStatuses(session, snapshot) {
-  if (!ledger.configured) return {};
-  const contracts = await ledger.activeContracts(governancePartyId);
-  const policies = new Map(contracts.filter((c) => templateName(c.templateId) === "FundPolicy").map((c) => [c.contractId, parsePolicy(c.argument)]));
-  const approvals = (snapshot.activeContracts?.roleApprovals ?? []).map((a) => ({
-    contractId: a.contractId, reviewer: a.data?.reviewer, role: a.data?.role, batchCid: a.data?.target?.batchCid,
+// An approval counts only until it expires: the ledger refuses expired ones when
+// the payout executes, so they are neither shown as met nor proposed.
+function approvalLive(expiresAt, now) {
+  const ms = Date.parse(expiresAt);
+  return Number.isFinite(ms) && ms > now;
+}
+const sameSet = (a, b) => a.length === b.length && a.every((item) => b.includes(item));
+
+// What each batch still needs, from the batches, pinned FundPolicies, live
+// approvals and open proposals the governance party sees (staff already read
+// every batch through /api/workflow, and governance members need this before
+// they execute). The ledger re-checks every rule at finalization.
+function ledgerStatuses(contracts, now = Date.now()) {
+  const of = (entity) => contracts.filter((c) => templateName(c.templateId) === entity);
+  const policies = new Map(of("FundPolicy").map((c) => [c.contractId, parsePolicy(c.argument)]));
+  const approvals = of("RoleApproval").filter((c) => approvalLive(c.argument.expiresAt, now)).map((c) => ({
+    contractId: c.contractId, reviewer: c.argument.reviewer, role: c.argument.role, batchCid: c.argument.target?.batchCid,
+  }));
+  const proposals = of("FinalizePolicyRedemption").map((c) => ({
+    batchCid: c.argument.batchCid, approvalCids: Array.isArray(c.argument.approvalCids) ? c.argument.approvalCids : [],
   }));
   const out = {};
-  for (const c of contracts.filter((c) => templateName(c.templateId) === "RedemptionBatch")) {
+  for (const c of of("RedemptionBatch")) {
     const batch = parseBatch(c.argument);
-    out[c.contractId] = batchStatus({ batchCid: c.contractId, batch, policy: batch.policyCid ? policies.get(batch.policyCid) ?? null : null, approvals });
+    const status = batchStatus({ batchCid: c.contractId, batch, policy: batch.policyCid ? policies.get(batch.policyCid) ?? null : null, approvals });
+    const current = status.roles.flatMap((r) => r.approvals.map((a) => a.approvalCid));
+    const open = proposals.filter((p) => p.batchCid === c.contractId);
+    out[c.contractId] = {
+      ...status,
+      openProposals: open.length,
+      // An open proposal already carries exactly the approvals valid now.
+      currentProposed: current.length > 0 && open.some((p) => sameSet(p.approvalCids, current)),
+    };
   }
   return out;
 }
+
+async function batchStatuses() {
+  if (!ledger.configured) return {};
+  return ledgerStatuses(await ledger.activeContracts(governancePartyId));
+}
+
+const inFlight = new Set();
 
 const WRITE_ROUTES = {
   "/api/approvals": ["approval.create", createApproval],
@@ -599,7 +635,7 @@ const server = http.createServer(async (req, res) => {
       // Full batches list every investor's allocation; investors use /api/me/records.
       if (!isStaff(session)) throw httpError(403, "Investors can only view their own records");
       const snapshot = await workflowSnapshot();
-      snapshot.batchStatus = await batchStatuses(session, snapshot).catch(() => ({}));
+      snapshot.batchStatus = await batchStatuses().catch(() => ({}));
       return json(res, 200, snapshot, origin);
     }
     if (req.method === "GET" && url.pathname === "/api/me/records") {
@@ -610,13 +646,21 @@ const server = http.createServer(async (req, res) => {
       const [action, handler] = WRITE_ROUTES[url.pathname];
       session = requireWriteContext(req, origin);
       const body = await jsonBody(req);
+      const target = body?.proposalCid ?? body?.batchCid ?? body?.approvalCid ?? body?.entitlementCid ?? body?.outstandingCid ?? body?.finalizationCid ?? null;
+      // One submission at a time per party, action and target: a double click
+      // or a second tab reaches the ledger once.
+      const key = [action, session.party, target, body?.role].join("|");
+      if (inFlight.has(key)) throw httpError(409, "This action is already being submitted");
+      inFlight.add(key);
       try {
         const result = await handler(session, body);
-        audit(session, action, body?.proposalCid ?? body?.batchCid ?? body?.approvalCid ?? body?.entitlementCid ?? body?.outstandingCid ?? body?.finalizationCid ?? null, "ok");
+        audit(session, action, target, "ok");
         return json(res, 200, { ok: true, ...result }, origin);
       } catch (error) {
         audit(session, action, null, `rejected:${error.status ?? 500}`);
         throw error;
+      } finally {
+        inFlight.delete(key);
       }
     }
     return json(res, 404, { error: "Not found" }, origin);

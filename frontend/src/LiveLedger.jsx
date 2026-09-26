@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CheckCircle2, Clock3, Layers3, LockKeyhole, LogOut, RefreshCw, ShieldCheck, Wallet } from "lucide-react";
 import { api, restoreSession, signIn, signOut } from "./api.js";
@@ -60,22 +60,30 @@ function SignIn({ onSignedIn }) {
   );
 }
 
-// Prevents double submits; optional confirmation for irreversible actions.
-function Action({ label, onRun, disabled, tone = "", confirmText, title }) {
-  const [pending, setPending] = useState(false);
+// Runs its action once. A second click is ignored while it is in flight, and
+// after the ledger accepts it the button stays disabled, showing doneLabel,
+// until the data it acted on changes (callers key it by that data). A rejected
+// action can be tried again. Optional confirmation for irreversible actions.
+function Action({ label, doneLabel = "Done", onRun, disabled, tone = "", confirmText, title }) {
+  const [state, setState] = useState("idle");
+  const busy = useRef(false);
   return (
     <button
       type="button"
       className={`button ${tone}`}
-      disabled={disabled || pending}
+      disabled={disabled || state !== "idle"}
       title={title}
       onClick={async () => {
+        if (busy.current) return;
         if (confirmText && !window.confirm(confirmText)) return;
-        setPending(true);
-        try { await onRun(); } finally { setPending(false); }
+        busy.current = true;
+        setState("pending");
+        const ok = await onRun();
+        setState(ok ? "done" : "idle");
+        busy.current = ok;
       }}
     >
-      {pending ? "Submitting…" : label}
+      {state === "pending" ? "Submitting…" : state === "done" ? doneLabel : label}
     </button>
   );
 }
@@ -178,13 +186,23 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
   useEffect(() => { setSlot(document.getElementById(headerSlotId)); }, [headerSlotId]);
   useEffect(() => { restoreSession().then(setUser).catch(() => setUser(null)); }, []);
   useEffect(() => { if (user) load(user); }, [user, load]);
+  // Keep counts current while the page is open: approvals, proposals and
+  // expiries change from other people's screens.
+  useEffect(() => {
+    if (!user) return undefined;
+    const timer = setInterval(() => { if (document.visibilityState === "visible") load(user); }, 20000);
+    return () => clearInterval(timer);
+  }, [user, load]);
 
-  const run = (label, fn) => async () => {
+  // Resolves true when the ledger accepted the action, false when it was rejected.
+  const run = (label, fn, describe) => async () => {
     try {
-      await fn();
-      notify?.(`${label}: done. The ledger accepted it.`);
+      const result = await fn();
+      notify?.(`${describe ? describe(result) : label}: done. The ledger accepted it.`);
+      return true;
     } catch (e) {
       notify?.(`${label} rejected: ${e.message}`, "error");
+      return false;
     } finally {
       await load(user);
     }
@@ -251,13 +269,13 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                   {records.entitlements.filter((r) => r.batchId === batchId).map((r) => (
                     <div className="live-row" key={r.contractId}>
                       <span>Allocated <strong className="live-units">{units(r.units)}</strong> units{r.sealed && <span className="sealed-tag" title="From a sealed batch: governance nodes never saw this row">sealed</span>}</span>
-                      <Action label="Acknowledge" tone="primary" disabled={writesOff} onRun={run("Acknowledgment", () => api.acknowledge(r.contractId))} />
+                      <Action label="Acknowledge" doneLabel="Acknowledged" tone="primary" disabled={writesOff} onRun={run("Acknowledgment", () => api.acknowledge(r.contractId))} />
                     </div>
                   ))}
                   {records.outstanding.filter((r) => r.batchId === batchId).map((r) => (
                     <div className="live-row" key={r.contractId}>
                       <span>Not funded <strong className="live-units">{units(r.units)}</strong> units{r.sealed && <span className="sealed-tag" title="From a sealed batch: governance nodes never saw this row">sealed</span>}</span>
-                      <Action label="Withdraw" disabled={writesOff} onRun={run("Withdrawal", () => api.withdraw(r.contractId))} />
+                      <Action label="Withdraw" doneLabel="Withdrawn" disabled={writesOff} onRun={run("Withdrawal", () => api.withdraw(r.contractId))} />
                     </div>
                   ))}
                 </div>
@@ -316,12 +334,12 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                                 {mine && (myApproval ? (
                                   <>
                                     <span className="approved-tag"><CheckCircle2 size={14} /> You approved</span>
-                                    <Action label="Revoke" tone="quiet" disabled={writesOff}
+                                    <Action key={myApproval.contractId} label="Revoke" doneLabel="Revoked" tone="quiet" disabled={writesOff}
                                       confirmText="Revoke this approval? The batch will need a new approval from your role."
                                       onRun={run("Revocation", () => api.revoke(myApproval.contractId))} />
                                   </>
                                 ) : (
-                                  <Action label="Approve" tone="primary" disabled={writesOff}
+                                  <Action label="Approve" doneLabel="Approved" tone="primary" disabled={writesOff}
                                     onRun={run(`${roleLabel(row.role)} approval`, () => api.approve(contractId, row.role))} />
                                 ))}
                               </span>
@@ -337,14 +355,20 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                     )}
                     {roles.includes("Operator") && status && (
                       <div className="live-actions">
+                        {/* Keyed by the approval set: a new or expired approval gives a fresh button. */}
                         <Action
-                          label={`Propose with ${plural(validCids.length, "approval")}`}
-                          tone={status.complete ? "primary" : ""}
-                          disabled={writesOff || validCids.length === 0 || status.kind === "legacy"}
+                          key={validCids.join(",")}
+                          label={status.currentProposed ? "Proposed" : `Propose with ${plural(validCids.length, "approval")}`}
+                          doneLabel="Proposed"
+                          tone={status.complete && !status.currentProposed ? "primary" : ""}
+                          disabled={writesOff || validCids.length === 0 || status.kind === "legacy" || status.currentProposed}
                           title={status.kind === "legacy" ? "Two-reviewer batches are finalized through the operator runbook" : undefined}
-                          onRun={run("Finalization proposal", () => api.proposeFinalize(contractId, validCids))}
+                          onRun={run("Finalization proposal", () => api.proposeFinalize(contractId),
+                            (r) => `Finalization proposal with ${plural(r?.approvalCount ?? validCids.length, "approval")}`)}
                         />
-                        {!status.complete && validCids.length > 0 && (
+                        {status.currentProposed ? (
+                          <p className="live-hint">A proposal with these {plural(validCids.length, "approval")} is open. BitSafe members confirm it from their own nodes.</p>
+                        ) : !status.complete && validCids.length > 0 && (
                           <p className="live-hint">Still missing {missing.join(", ")}. BitSafe will reject execution until every requirement is met.</p>
                         )}
                       </div>
@@ -362,7 +386,7 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
               {sealedPending.map(({ contractId, data }) => (
                 <div className="live-row" key={contractId}>
                   <span><strong>{data?.batchId}</strong> · {units(data?.totalAllocated)} units across {plural(data?.sealed?.rowCount ?? 0, "request")}</span>
-                  <Action label="Open allocation book" tone="primary" disabled={writesOff}
+                  <Action label="Open allocation book" doneLabel="Opened" tone="primary" disabled={writesOff}
                     onRun={run("Distribution", () => api.distributeSealed(contractId))} />
                 </div>
               ))}
@@ -388,9 +412,9 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                       <span className="live-meta">{p.confirmationCount} of {threshold} confirmations{confirmedByMe ? " · you confirmed" : ""}</span>
                     </span>
                     <span className="live-actions">
-                      <Action label={confirmedByMe ? "Confirmed" : "Confirm"} disabled={writesOff || confirmedByMe}
+                      <Action label={confirmedByMe ? "Confirmed" : "Confirm"} doneLabel="Confirmed" disabled={writesOff || confirmedByMe}
                         onRun={run("Confirmation", () => api.confirm(p.proposalCid))} />
-                      <Action label="Execute" tone="primary" disabled={writesOff || !p.canExecute}
+                      <Action label="Execute" doneLabel="Executed" tone="primary" disabled={writesOff || !p.canExecute}
                         title={p.canExecute ? undefined : `Needs ${threshold} of ${threshold} confirmations`}
                         confirmText="Execute this governed action on the ledger? This cannot be undone."
                         onRun={run("Execution", () => api.execute(p.proposalCid))} />

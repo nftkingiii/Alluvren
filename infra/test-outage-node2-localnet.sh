@@ -131,7 +131,7 @@ for pair in "treasury TreasuryReviewer" "coo FinalSignoff" "compliance Complianc
   expect "$R" 200 "$1 approval"
   printf -v "A_$1" '%s' "$(body "$R" | jq -r '.approvalCid')"
 done
-R=$(post operator /api/proposals/finalize "$(jq -cn --arg b "$BATCH" --arg a "$A_treasury" --arg f "$A_coo" --arg c "$A_compliance" '{batchCid:$b,approvalCids:[$a,$f,$c]}')")
+R=$(post operator /api/proposals/finalize "$(jq -cn --arg b "$BATCH" '{batchCid:$b}')")
 expect "$R" 200 'operator proposal'
 PROP=$(body "$R" | jq -r '.proposalCid')
 for member in member-1 member-3; do

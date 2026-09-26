@@ -185,6 +185,22 @@ LocalNet verification: see the next section. Known limits: in-memory sessions; o
 
 Leftovers: two earlier interrupted runs (`g8-1790354711`, `g8-1790354785`) left their FundPolicy, an unfinalized batch and their approvals on LocalNet (approvals expire after 30 minutes; their failed proposals were cancelled). Still unverified: per-user ledger credentials (one shared ledger user acts for all parties, so backend checks are the party boundary); the Live ledger UI against LocalNet in a browser (the run drove the same HTTP API, not the UI).
 
+## Proposals use current approvals; every action submits once (2026-09-26)
+
+Recording the demo showed two faults. First, the operator's page proposed with the approvals it had loaded, not the ones valid when the button was pressed: a proposal went out "with 2 approvals" after Compliance had approved, and one "with 1 approval" after the COO had. Second, repeated clicks created duplicate proposals.
+
+| Change | Check |
+| --- | --- |
+| The server proposes with the approvals valid on the ledger at that moment and ignores the list a page sends | Test: a stale list naming an expired and a missing approval produces a proposal with the one valid approval |
+| Expired approvals no longer count as met or get proposed | Test: an expired COO approval leaves FinalSignoff unmet |
+| A proposal already open with the same approvals is refused (409), and the page shows "Proposed" | Test: repeat refused, nothing reaches the ledger; workflow reports `currentProposed` |
+| One submission at a time per party, action and target | Test: two simultaneous proposals give one 200 and one 409, and one ledger submit |
+| A second approval for the same role and a second confirmation of the same proposal are refused | Tests for both; nothing reaches the ledger or DecMan |
+| Buttons ignore clicks while submitting and stay disabled after the ledger accepts ("Approved", "Proposed", …); a rejected action can be retried | Browser tests: rejected then accepted approval; a double click on Propose sends one request |
+| The Live ledger refreshes every 20 seconds while visible | |
+
+Backend 25/25, frontend 6/6 and build, browser journeys 11/11. Removing any one of the six server guards makes a test fail. Local mocks only; the LocalNet gate script (`test-gate8-localnet.sh`) now asserts the approval count and the repeat refusal, but has not been re-run on LocalNet since this change.
+
 ## Live ledger UI rehearsal on BitSafe LocalNet (2026-09-26)
 
 `infra/demo-session.sh start` on the VM, then the real frontend on a laptop through an SSH tunnel to the backend. A Playwright script drove the demo video's 17 steps as eight signed-in roles. The steps: 40%-funded batch, Treasury and COO approve, the operator proposes, members 1 and 2 confirm, execution rejected for missing Compliance, Compliance approves, the corrected proposal executes, and the investor sees 240/360 and acknowledges. Then the sealed batch: approvals, proposal, execution, the operator opens the allocation book, and the investor sees the sealed 300-unit record. The full run passed on a clean session (`window-17`, `window-18`) in about 2.5 minutes. `demo-localnet.sh outage-node2` then passed while the session's backend stayed up.

@@ -22,6 +22,7 @@ const PASSWORD = "correct horse battery staple";
 const PKG = "#alluvren-v1";
 
 const decmanCalls = [];
+let slowSubmits = false;
 const ledgerSubmits = [];
 let p1;
 let p2;
@@ -59,7 +60,7 @@ function decman(node) {
     if (url.pathname === "/governance/confirmations") {
       const proposal = (cid, label, canExecute) => ({
         proposal_cid: cid, action_label: label, description: cid, proposer: OPERATOR,
-        confirmations: [{ contract_id: `${cid}-c1`, confirming_party: MEMBER }, { contract_id: `${cid}-c2`, confirming_party: "other" }],
+        confirmations: [{ contract_id: `${cid}-c1`, confirming_party: cid === "proposal-mine" ? MEMBER : "other-1" }, { contract_id: `${cid}-c2`, confirming_party: "other-2" }],
         confirmation_count: 2, can_execute: canExecute, orphaned: false, created_at: 1790007000,
       });
       return res.end(JSON.stringify({
@@ -70,6 +71,7 @@ function decman(node) {
           proposal("proposal-low", "FinalizePolicyRedemption", false),
           proposal("proposal-other", "SetThreshold", true),
           proposal("proposal-fail", "FinalizePolicyRedemption", true),
+          proposal("proposal-mine", "FinalizePolicyRedemption", false),
         ],
       }));
     }
@@ -107,6 +109,7 @@ const fundPolicy = {
   base: [{ role: "TreasuryReviewer", members: [TREAS], quorum: "1" }, { role: "FinalSignoff", members: [party("coo")], quorum: "1" }],
   conditional: [{ trigger: { tag: "FundedBelowBps", value: "5000" }, requirement: { role: "ComplianceReviewer", members: [party("compliance")], quorum: "1" } }],
 };
+const LIVE = "2099-01-01T00:00:00Z";
 const sealedFinalization = {
   governanceParty: GOV, operator: OPERATOR, batchId: "sealed-1", policyVersion: "demo-fund@v1", totalRequested: "1000", totalAllocated: "500",
   summary: { commitment: "c".repeat(64), rowCount: "2", maxRowAllocatedUnits: "300" }, approvers: [TREAS], finalizedAt: "2026-09-25T12:00:00Z",
@@ -116,7 +119,11 @@ const acs = {
     { templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: { ...batch, recoveryDeadline: "2026-09-25T12:00:00Z", secret: "must-not-leak" } },
     { templateId: `${PKG}:Alluvren.Redemption:RoleApproval`, contractId: "approval-t", createArgument: {
       governanceParty: GOV, reviewer: TREAS, role: "TreasuryReviewer",
-      target: { batchCid: "batch-1", batchId: "window-17", policyVersion: "demo-fund@v1", secret: "must-not-leak" }, expiresAt: "2026-09-25T12:30:00Z",
+      target: { batchCid: "batch-1", batchId: "window-17", policyVersion: "demo-fund@v1", secret: "must-not-leak" }, expiresAt: LIVE,
+    } },
+    { templateId: `${PKG}:Alluvren.Redemption:RoleApproval`, contractId: "approval-expired", createArgument: {
+      governanceParty: GOV, reviewer: party("coo"), role: "FinalSignoff",
+      target: { batchCid: "batch-1", batchId: "window-17", policyVersion: "demo-fund@v1" }, expiresAt: "2026-09-25T12:30:00Z",
     } },
     { templateId: `${PKG}:Alluvren.Sealed:SealedFinalization`, contractId: "fin-1", createArgument: sealedFinalization },
     { templateId: `${PKG}:Alluvren.Redemption:FundPolicy`, contractId: "policy-1", createArgument: fundPolicy },
@@ -155,6 +162,7 @@ function ledgerMock() {
     }
     if (url.pathname === "/v2/commands/submit-and-wait-for-transaction") {
       ledgerSubmits.push(body.commands);
+      if (slowSubmits) await new Promise((resolve) => setTimeout(resolve, 300));
       const command = body.commands.commands[0];
       const created = [];
       if (command.CreateCommand) created.push({ templateId: command.CreateCommand.templateId, contractId: "new-contract" });
@@ -318,14 +326,17 @@ test("workflow requires a staff session; investors are refused", async () => {
   assert.equal(listed.data.totalRequested, 1000);
   assert.equal(listed.data.rows[0].allocatedUnits, 400);
   assert.equal(listed.data.recoveryDeadline, Date.parse("2026-09-25T12:00:00Z") * 1000);
-  assert.equal(payload.activeContracts.roleApprovals[0].data.expiresAt, Date.parse("2026-09-25T12:30:00Z") * 1000);
+  assert.equal(payload.activeContracts.roleApprovals[0].data.expiresAt, Date.parse(LIVE) * 1000);
   const status = payload.batchStatus["batch-1"];
   assert.equal(status.fundedBps, 4000);
   assert.equal(status.fundingThresholdBps, 5000);
+  // The COO's approval has expired, so FinalSignoff is not met.
   assert.deepEqual(status.roles.map((r) => [r.role, r.met, r.conditional]), [
     ["TreasuryReviewer", true, false], ["FinalSignoff", false, false], ["ComplianceReviewer", false, true],
   ]);
+  assert.deepEqual(status.roles.flatMap((r) => r.approvals.map((a) => a.approvalCid)), ["approval-t"]);
   assert.equal(status.complete, false);
+  assert.equal(status.currentProposed, false);
   // Governance members see the same requirements before they execute.
   const memberView = await (await get(await login("member"), "/api/workflow")).json();
   assert.equal(memberView.batchStatus["batch-1"].policyVisible, true);
@@ -397,21 +408,76 @@ test("investors can act only on their own records", async () => {
   assert.equal(JSON.stringify(records).includes("entitlement-b"), false);
 });
 
-test("only the batch proposer can propose finalization, with exact approval sets", async () => {
+test("proposals use the approvals valid now on the ledger, not the request's list", async () => {
   const operator = await login("operator");
   ledgerSubmits.length = 0;
-  assert.equal((await post(operator, "/api/proposals/finalize", { batchCid: "batch-1", approvalCids: ["a", "a"] })).status, 400);
-  const response = await post(operator, "/api/proposals/finalize", { batchCid: "batch-1", approvalCids: ["approval-t", "approval-c"] });
+  // A stale page lists an expired approval and one that no longer exists.
+  const response = await post(operator, "/api/proposals/finalize", { batchCid: "batch-1", approvalCids: ["approval-t", "approval-expired", "approval-gone"] });
   assert.equal(response.status, 200);
+  assert.equal((await response.json()).approvalCount, 1);
   assert.deepEqual(ledgerSubmits[0].actAs, [OPERATOR]);
   const command = ledgerSubmits[0].commands[0].CreateCommand;
   assert.match(command.templateId, /FinalizePolicyRedemption$/);
-  assert.deepEqual(command.createArguments.approvalCids, ["approval-t", "approval-c"]);
-  assert.equal(command.createArguments.description, "Finalize window-17 with 2 approvals");
+  assert.deepEqual(command.createArguments.approvalCids, ["approval-t"]);
+  assert.equal(command.createArguments.description, "Finalize window-17 with 1 approval");
   assert.equal(command.createArguments.proposer, OPERATOR);
 
   const staff = await login("treasury");
-  assert.equal((await post(staff, "/api/proposals/finalize", { batchCid: "batch-1", approvalCids: ["approval-t"] })).status, 403);
+  assert.equal((await post(staff, "/api/proposals/finalize", { batchCid: "batch-1" })).status, 403);
+});
+
+test("a proposal already open with the same approvals is not submitted again", async () => {
+  const open = { templateId: `${PKG}:Alluvren.Redemption:FinalizePolicyRedemption`, contractId: "proposal-open",
+    createArgument: { governanceParty: GOV, proposer: OPERATOR, batchCid: "batch-1", approvalCids: ["approval-t"], description: "Finalize window-17 with 1 approval" } };
+  acs[GOV].push(open);
+  try {
+    const operator = await login("operator");
+    ledgerSubmits.length = 0;
+    const repeat = await post(operator, "/api/proposals/finalize", { batchCid: "batch-1" });
+    assert.equal(repeat.status, 409);
+    assert.deepEqual(await repeat.json(), { error: "A proposal to finalize window-17 with 1 approval is already open" });
+    assert.equal(ledgerSubmits.length, 0);
+    const status = (await (await get(operator, "/api/workflow")).json()).batchStatus["batch-1"];
+    assert.equal(status.currentProposed, true);
+    assert.equal(status.openProposals, 1);
+  } finally {
+    acs[GOV].splice(acs[GOV].indexOf(open), 1);
+  }
+});
+
+test("a double submit of the same action reaches the ledger once", async () => {
+  const operator = await login("operator");
+  ledgerSubmits.length = 0;
+  slowSubmits = true;
+  try {
+    const statuses = (await Promise.all([1, 2].map(() => post(operator, "/api/proposals/finalize", { batchCid: "batch-1" })))).map((r) => r.status);
+    assert.deepEqual(statuses.sort(), [200, 409]);
+    assert.equal(ledgerSubmits.length, 1);
+  } finally {
+    slowSubmits = false;
+  }
+});
+
+test("a reviewer's second approval and a member's second confirmation are refused", async () => {
+  const mine = { templateId: `${PKG}:Alluvren.Redemption:RoleApproval`, contractId: "approval-mine",
+    createArgument: { reviewer: TREAS, role: "TreasuryReviewer", target: { batchCid: "batch-1", batchId: "window-17" }, expiresAt: LIVE } };
+  acs[TREAS].push(mine);
+  try {
+    const staff = await login("treasury");
+    ledgerSubmits.length = 0;
+    const again = await post(staff, "/api/approvals", { batchCid: "batch-1", role: "TreasuryReviewer" });
+    assert.equal(again.status, 409);
+    assert.deepEqual(await again.json(), { error: "You have already approved this batch for that role" });
+    assert.equal(ledgerSubmits.length, 0);
+  } finally {
+    acs[TREAS].splice(acs[TREAS].indexOf(mine), 1);
+  }
+  const member = await login("member");
+  decmanCalls.length = 0;
+  const confirmAgain = await post(member, "/api/governance/confirm", { proposalCid: "proposal-mine" });
+  assert.equal(confirmAgain.status, 409);
+  assert.deepEqual(await confirmAgain.json(), { error: "You have already confirmed this proposal" });
+  assert.equal(decmanCalls.filter((call) => call.path === "/governance/confirm").length, 0);
 });
 
 test("governance actions use the member's own node and server-side confirmation state", async () => {

@@ -18,7 +18,7 @@ Small Node 20 service between the Alluvren UI, the Decentralization Manager (Dec
 | Role (account) | Can do |
 | --- | --- |
 | `FundReviewer`, `TreasuryReviewer`, `ComplianceReviewer`, `AdministratorCheck`, `FinalSignoff` | `POST /api/approvals {batchCid, role}` for batches their party can see; `POST /api/approvals/revoke {approvalCid}` for their own approvals |
-| `Operator` (the batch proposer party) | `POST /api/proposals/finalize {batchCid, approvalCids}` for policy batches it proposed |
+| `Operator` (the batch proposer party) | `POST /api/proposals/finalize {batchCid}` for policy batches it proposed; the server proposes with the approvals valid at that moment and refuses a repeat of an open proposal |
 | `GovernanceMember` (bound to one DecMan node) | `POST /api/governance/confirm {proposalCid}` and `POST /api/governance/execute {proposalCid}` for Alluvren actions only (`FinalizeRedemption`, `FinalizePolicyRedemption`, `UpdateFundPolicy`); execute requires the threshold |
 | `Investor` (cannot hold other roles) | `POST /api/claims/acknowledge {entitlementCid}`, `POST /api/outstanding/withdraw {outstandingCid}` for their own records |
 | Any signed-in account | `GET /api/auth/me`, `GET /api/me/records`, `POST /api/auth/logout` |

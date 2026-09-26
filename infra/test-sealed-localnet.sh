@@ -121,7 +121,7 @@ R=$(post treasury /api/approvals "$(jq -cn --arg b "$BATCH" '{batchCid:$b,role:"
 A_T=$(body "$R" | jq -r '.approvalCid')
 R=$(post coo /api/approvals "$(jq -cn --arg b "$BATCH" '{batchCid:$b,role:"FinalSignoff"}')"); expect "$R" 200 'coo approval'
 A_F=$(body "$R" | jq -r '.approvalCid')
-R=$(post operator /api/proposals/finalize "$(jq -cn --arg b "$BATCH" --arg a "$A_T" --arg f "$A_F" '{batchCid:$b,approvalCids:[$a,$f]}')"); expect "$R" 200 'operator proposal'
+R=$(post operator /api/proposals/finalize "$(jq -cn --arg b "$BATCH" '{batchCid:$b}')"); expect "$R" 200 'operator proposal'
 PROP=$(body "$R" | jq -r '.proposalCid')
 for member in member-1 member-2; do
   for _ in $(seq 1 10); do

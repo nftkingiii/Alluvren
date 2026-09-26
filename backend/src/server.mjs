@@ -109,11 +109,13 @@ async function workflowSnapshot() {
   const party = encodeURIComponent(governancePartyId);
   let view;
   const governanceView = () => (view ??= ledger.activeContracts(governancePartyId));
-  const [governance, audit, batches, approvals] = await Promise.all([
+  const [governance, audit, batches, approvals, sealedFinalizations] = await Promise.all([
     upstream("p1", `/governance/confirmations?party_id=${party}&limit=25`),
     upstream("p1", `/governance/chain-audit?party_id=${party}&limit=25&refresh=true`),
     queryContracts("RedemptionBatch", governanceView),
     queryContracts("RoleApproval", governanceView),
+    // Sealed batches (Alluvren.Sealed) are only read through the Ledger API.
+    ledger.configured ? queryContracts("SealedFinalization", governanceView) : [],
   ]);
   const domainActions = Array.isArray(governance?.domain_actions) ? governance.domain_actions : [];
   const auditEntries = Array.isArray(audit?.entries) ? audit.entries : [];
@@ -141,6 +143,7 @@ async function workflowSnapshot() {
       configured: Boolean(alluvrenPackageRef),
       redemptionBatches: batches,
       roleApprovals: approvals,
+      sealedFinalizations,
     },
     audit: auditEntries.map((entry) => ({
       eventType: entry.event_type,
@@ -205,6 +208,13 @@ function projectContractPayload(entityName, payload) {
     return integer(value);
   };
 
+  // A sealed batch shows governance only its totals and commitment.
+  const sealedSummary = (value) => value && typeof value === "object" ? {
+    commitment: text(value.commitment),
+    rowCount: integer(value.rowCount),
+    maxRowAllocatedUnits: integer(value.maxRowAllocatedUnits),
+  } : null;
+
   if (entityName === "RedemptionBatch") {
     if (typeof payload.batchId !== "string" || !Array.isArray(payload.rows)) return null;
     const rows = Array.isArray(payload.rows) ? payload.rows.slice(0, 500).map((row) => ({
@@ -224,6 +234,20 @@ function projectContractPayload(entityName, payload) {
       totalAllocated: integer(payload.totalAllocated),
       recoveryDeadline: micros(payload.recoveryDeadline),
       rows,
+      sealed: sealedSummary(payload.sealed),
+    };
+  }
+
+  if (entityName === "SealedFinalization") {
+    if (typeof payload.batchId !== "string") return null;
+    return {
+      batchId: text(payload.batchId),
+      policyVersion: text(payload.policyVersion),
+      operator: text(payload.operator),
+      totalRequested: integer(payload.totalRequested),
+      totalAllocated: integer(payload.totalAllocated),
+      sealed: sealedSummary(payload.summary),
+      finalizedAt: micros(payload.finalizedAt),
     };
   }
 
@@ -361,15 +385,57 @@ async function revokeApproval(session, body) {
   return { revoked: approval.contractId, updateId: result.updateId };
 }
 
-async function investorAction(session, body, entity, choice, receiptEntity) {
+// [module, template, choice, receipt template] per investor action. Sealed
+// batches (Alluvren.Sealed) issue operator-signed records with the same shape.
+const INVESTOR_ACTIONS = {
+  acknowledge: { field: "entitlementCid", kinds: [
+    ["Claims", "ClaimEntitlement", "ClaimEntitlement_Acknowledge", "ClaimReceipt"],
+    ["Sealed", "PrivateEntitlement", "PrivateEntitlement_Acknowledge", "PrivateClaimReceipt"],
+  ] },
+  withdraw: { field: "outstandingCid", kinds: [
+    ["Claims", "OutstandingRedemption", "OutstandingRedemption_Withdraw", "OutstandingReleaseReceipt"],
+    ["Sealed", "PrivateOutstanding", "PrivateOutstanding_Withdraw", "PrivateReleaseReceipt"],
+  ] },
+};
+
+async function investorAction(session, body, action) {
   requireWrites();
   requireRole(session, "Investor");
-  const cidField = entity === "ClaimEntitlement" ? body.entitlementCid : body.outstandingCid;
-  const record = await ownVisibleContract(session, cidField, entity);
+  const { field, kinds } = INVESTOR_ACTIONS[action];
+  const contractId = body[field];
+  if (!validId(contractId)) throw httpError(400, "A valid contract ID is required");
+  const contracts = await ledger.activeContracts(session.party);
+  const record = contracts.find((c) => c.contractId === contractId && kinds.some(([, entity]) => entity === templateName(c.templateId)));
+  if (!record) throw httpError(404, "Contract not found for your account");
   if (record.argument.investor !== session.party) throw httpError(403, "This record belongs to another investor");
-  const result = await exercise(session, "Claims", entity, record.contractId, choice);
+  const [module, entity, choice, receiptEntity] = kinds.find(([, e]) => e === templateName(record.templateId));
+  const result = await exercise(session, module, entity, record.contractId, choice);
   const receiptCid = result.created.find((event) => templateName(event.templateId) === receiptEntity)?.contractId ?? null;
   return { receiptCid, units: Number(record.argument.units), updateId: result.updateId };
+}
+
+// After a sealed batch is finalized, the operator opens its AllocationBook:
+// the ledger checks the rows against the approved commitment and issues each
+// investor's private records.
+async function distributeSealed(session, body) {
+  requireWrites();
+  requireRole(session, "Operator");
+  const finalization = await ownVisibleContract(session, body.finalizationCid, "SealedFinalization");
+  if (finalization.argument.operator !== session.party) throw httpError(403, "Only the batch operator can distribute it");
+  const contracts = await ledger.activeContracts(session.party);
+  const book = contracts.find((c) => templateName(c.templateId) === "AllocationBook"
+    && c.argument.operator === session.party
+    && c.argument.batchId === finalization.argument.batchId
+    && c.argument.policyVersion === finalization.argument.policyVersion);
+  if (!book) throw httpError(404, "No allocation book for this batch");
+  const result = await ledger.submit(session.party, [{ ExerciseCommand: {
+    templateId: templateId("Sealed", "AllocationBook"),
+    contractId: book.contractId,
+    choice: "AllocationBook_Distribute",
+    choiceArgument: { finalizationCid: finalization.contractId },
+  } }]);
+  const count = (entity) => result.created.filter((event) => templateName(event.templateId) === entity).length;
+  return { batchId: String(finalization.argument.batchId), entitlements: count("PrivateEntitlement"), outstanding: count("PrivateOutstanding"), updateId: result.updateId };
 }
 
 async function proposeFinalize(session, body) {
@@ -439,12 +505,15 @@ async function myRecords(session) {
     batchId: String(c.argument.batchId ?? ""),
     requestId: String(c.argument.requestId ?? ""),
     units: Number(c.argument.units),
+    // Sealed-batch records are operator-signed and never seen by governance.
+    sealed: templateName(c.templateId).startsWith("Private"),
   });
+  const both = (governed, sealed) => [...own(governed, "investor"), ...own(sealed, "investor")];
   return {
-    entitlements: own("ClaimEntitlement", "investor").map(record),
-    outstanding: own("OutstandingRedemption", "investor").map(record),
-    receipts: own("ClaimReceipt", "investor").map((c) => ({ ...record(c), at: c.argument.acknowledgedAt ?? null, mode: c.argument.mode ?? null })),
-    releases: own("OutstandingReleaseReceipt", "investor").map((c) => ({ ...record(c), at: c.argument.releasedAt ?? null, mode: c.argument.mode ?? null })),
+    entitlements: both("ClaimEntitlement", "PrivateEntitlement").map(record),
+    outstanding: both("OutstandingRedemption", "PrivateOutstanding").map(record),
+    receipts: both("ClaimReceipt", "PrivateClaimReceipt").map((c) => ({ ...record(c), at: c.argument.acknowledgedAt ?? null, mode: c.argument.mode ?? null })),
+    releases: both("OutstandingReleaseReceipt", "PrivateReleaseReceipt").map((c) => ({ ...record(c), at: c.argument.releasedAt ?? null, mode: c.argument.mode ?? null })),
     approvals: own("RoleApproval", "reviewer").map((c) => ({
       contractId: c.contractId,
       role: String(c.argument.role ?? ""),
@@ -475,8 +544,9 @@ async function batchStatuses(session, snapshot) {
 const WRITE_ROUTES = {
   "/api/approvals": ["approval.create", createApproval],
   "/api/approvals/revoke": ["approval.revoke", revokeApproval],
-  "/api/claims/acknowledge": ["claim.acknowledge", (s, b) => investorAction(s, b, "ClaimEntitlement", "ClaimEntitlement_Acknowledge", "ClaimReceipt")],
-  "/api/outstanding/withdraw": ["outstanding.withdraw", (s, b) => investorAction(s, b, "OutstandingRedemption", "OutstandingRedemption_Withdraw", "OutstandingReleaseReceipt")],
+  "/api/claims/acknowledge": ["claim.acknowledge", (s, b) => investorAction(s, b, "acknowledge")],
+  "/api/outstanding/withdraw": ["outstanding.withdraw", (s, b) => investorAction(s, b, "withdraw")],
+  "/api/sealed/distribute": ["sealed.distribute", distributeSealed],
   "/api/proposals/finalize": ["proposal.finalize", proposeFinalize],
   "/api/governance/confirm": ["governance.confirm", governanceConfirm],
   "/api/governance/execute": ["governance.execute", governanceExecute],
@@ -539,7 +609,7 @@ const server = http.createServer(async (req, res) => {
       const body = await jsonBody(req);
       try {
         const result = await handler(session, body);
-        audit(session, action, body?.proposalCid ?? body?.batchCid ?? body?.approvalCid ?? body?.entitlementCid ?? body?.outstandingCid ?? null, "ok");
+        audit(session, action, body?.proposalCid ?? body?.batchCid ?? body?.approvalCid ?? body?.entitlementCid ?? body?.outstandingCid ?? body?.finalizationCid ?? null, "ok");
         return json(res, 200, { ok: true, ...result }, origin);
       } catch (error) {
         audit(session, action, null, `rejected:${error.status ?? 500}`);

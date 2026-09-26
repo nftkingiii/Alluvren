@@ -61,4 +61,5 @@ export const api = {
   proposeFinalize: (batchCid, approvalCids) => request("/api/proposals/finalize", { method: "POST", body: { batchCid, approvalCids } }),
   confirm: (proposalCid) => request("/api/governance/confirm", { method: "POST", body: { proposalCid } }),
   execute: (proposalCid) => request("/api/governance/execute", { method: "POST", body: { proposalCid } }),
+  distributeSealed: (finalizationCid) => request("/api/sealed/distribute", { method: "POST", body: { finalizationCid } }),
 };

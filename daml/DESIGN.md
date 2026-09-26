@@ -201,3 +201,42 @@ Policy: base Treasury 1-of-2 + Operations-independent Administrator check 1-of-1
 
 - Roles are only as strong as who controls the parties. Until Gate 8 maps authenticated users to parties, all roles are sandbox parties controlled by one developer; claim mechanics, not organizational independence.
 - The role list comes from three user-reported interviews; confirm the policy shape with those contacts before treating it as validated.
+
+## Sealed batches (alluvren-v1 0.4.0, 2026-09-26)
+
+Status: implemented; Daml Script tests S-01..S-07 pass; LocalNet run in `infra/test-sealed-localnet.sh`.
+
+### Why
+
+The governance party is a stakeholder on every regular Alluvren contract, and it is hosted on all three BitSafe nodes, so every governance node sees the full redemption register: each investor's row, entitlement and receipt. Sealed batches let governance enforce the fund policy without seeing who gets what.
+
+### Contract model (`Alluvren.Sealed`)
+
+- `RedemptionBatch.sealed : Optional SealedSummary` (new trailing field). A sealed batch has no rows; it carries totals, the row count, the largest single allocation and `commitment` = SHA-256 over the canonical text `salt\nrequestId|investor|requested|allocated…` (rows sorted by request ID). It needs a fund policy and `proposer == operator`.
+- `AllocationBook` (signatory operator only): the salt and the rows.
+- `SealedFinalization` (signatory governance, observer operator): created instead of investor records when a sealed batch passes `RedemptionBatch_FinalizeWithPolicy`. Records totals, the summary and the approvers; no rows.
+- `AllocationBook_Distribute` (controller operator): closes the finalization (consuming, so at most once), then checks the rows against the commitment, row count, totals, declared largest allocation and largest-remainder rule, and that no approver is an investor. It then creates `PrivateEntitlement` / `PrivateOutstanding` (signatory operator, observer investor), each carrying the commitment. Investors acknowledge or withdraw once (`PrivateClaimReceipt`, `PrivateReleaseReceipt`).
+
+### Why governance does not see the rows
+
+A party sees the actions it is an informee of and their consequences, not the enclosing action. Distribution is a choice on the operator's book. Governance is an informee only of the nested `SealedFinalization_Close`, which carries no rows; the private records are created as siblings, outside anything governance is a stakeholder of.
+
+### Checks moved from finalization to distribution
+
+With no rows at finalization, three checks happen when the book is opened: the rows match the commitment, the declared largest allocation is the real one (it drives `InvestorShareAboveBps`, so understating it to dodge the trigger leaves the batch undistributable), and no approver is an investor. Each failure leaves the finalization open and nobody paid.
+
+### Tests (daml/alluvren-v0-test/daml/Alluvren/SealedTest.daml)
+
+| ID | Test |
+| --- | --- |
+| S-01 | Full flow: no governance-signed investor records, governance cannot see the book or private records, each investor sees only its own, acknowledge/withdraw once |
+| S-02 | A book with different rows is rejected; the finalization stays open; the real book then distributes |
+| S-03 | A finalized batch distributes at most once |
+| S-04 | The declared largest allocation raises Treasury to 2-of-2; understating it lets finalization pass but distribution fails |
+| S-05 | An approver who is an investor blocks distribution |
+| S-06 | Sealed batches need no rows, a policy, proposer == operator, a valid summary; books need a 32-character salt and clean request IDs |
+| S-07 | The commitment text is canonical and the hash is 64 hex characters (off-ledger tools compute the same) |
+
+### Trust boundary
+
+Private records are signed by the operator, not by governance. Governance guarantees the totals and policy; the commitment binds the split, and distribution is checked by the ledger and happens once. An auditor with an investor's record can verify it carries the approved commitment. `DA.Crypto.Text` is an alpha Daml feature (compiled for LF 2.2 with `-Wno-crypto-text-is-alpha`).

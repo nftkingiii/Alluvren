@@ -98,7 +98,7 @@ function Funding({ status, data }) {
   );
 }
 
-function focusLines({ roles, user, statuses, batches, proposals, records }) {
+function focusLines({ roles, user, statuses, batches, proposals, records, sealedPending }) {
   const lines = [];
   if (roles.includes("Investor") && records) {
     const toAck = records.entitlements.reduce((s, r) => s + r.units, 0);
@@ -116,6 +116,7 @@ function focusLines({ roles, user, statuses, batches, proposals, records }) {
   if (roles.includes("Operator")) {
     const ready = batches.filter(({ contractId }) => statuses[contractId]?.complete).length;
     if (ready) lines.push(<><strong>{plural(ready, "batch")}</strong> {ready === 1 ? "has" : "have"} every required approval and can be proposed</>);
+    if (sealedPending.length) lines.push(<><strong>{plural(sealedPending.length, "sealed batch")}</strong> {sealedPending.length === 1 ? "is" : "are"} finalized and ready to distribute</>);
   }
   if (roles.includes("GovernanceMember")) {
     const toConfirm = proposals.filter((p) => !p.confirmations?.some((c) => c.party === user.party)).length;
@@ -198,7 +199,11 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
   const myApprovalRoles = roles.filter((role) => ["FundReviewer", "TreasuryReviewer", "ComplianceReviewer", "AdministratorCheck", "FinalSignoff"].includes(role));
   const myApprovals = records?.approvals ?? [];
   const writesOff = health && health.writesEnabled === false;
-  const lines = focusLines({ roles, user, statuses, batches, proposals, records });
+  // Sealed batches finalized by governance whose rows the operator still has to open.
+  const sealedPending = roles.includes("Operator")
+    ? (workflow?.activeContracts?.sealedFinalizations ?? []).filter((f) => f.data?.operator === user.party)
+    : [];
+  const lines = focusLines({ roles, user, statuses, batches, proposals, records, sealedPending });
   const policies = [...new Set(Object.values(statuses).map((s) => s.policyVersion).filter(Boolean))];
   const investorBatches = isInvestor && records
     ? [...new Set([...records.entitlements, ...records.outstanding].map((r) => r.batchId))]
@@ -219,20 +224,20 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
           {isInvestor && records && (
             <section className="card">
               <h2><Wallet size={18} /> My redemption records</h2>
-              <p className="live-lede">Only you can see these. Each action is recorded once; it is a demo acknowledgment, not a payment.</p>
+              <p className="live-lede">Other investors can't see these. Each action is recorded once; it is a demo acknowledgment, not a payment.</p>
               {investorBatches.length === 0 && <p className="live-lede">No open records.</p>}
               {investorBatches.map((batchId) => (
                 <div key={batchId}>
                   <h3>{batchId}</h3>
                   {records.entitlements.filter((r) => r.batchId === batchId).map((r) => (
                     <div className="live-row" key={r.contractId}>
-                      <span>Allocated <strong className="live-units">{units(r.units)}</strong> units</span>
+                      <span>Allocated <strong className="live-units">{units(r.units)}</strong> units{r.sealed && <span className="sealed-tag" title="From a sealed batch: governance nodes never saw this row">sealed</span>}</span>
                       <Action label="Acknowledge" tone="primary" disabled={writesOff} onRun={run("Acknowledgment", () => api.acknowledge(r.contractId))} />
                     </div>
                   ))}
                   {records.outstanding.filter((r) => r.batchId === batchId).map((r) => (
                     <div className="live-row" key={r.contractId}>
-                      <span>Not funded <strong className="live-units">{units(r.units)}</strong> units</span>
+                      <span>Not funded <strong className="live-units">{units(r.units)}</strong> units{r.sealed && <span className="sealed-tag" title="From a sealed batch: governance nodes never saw this row">sealed</span>}</span>
                       <Action label="Withdraw" disabled={writesOff} onRun={run("Withdrawal", () => api.withdraw(r.contractId))} />
                     </div>
                   ))}
@@ -267,6 +272,12 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                       <span className="live-meta"><span className="nowrap">{data?.policyVersion}</span>{status?.kind === "legacy" ? " · two-reviewer rule" : ""}</span>
                     </div>
                     <Funding status={status} data={data} />
+                    {data?.sealed && (
+                      <p className="sealed-note">
+                        <LockKeyhole size={14} /> Rows sealed: {plural(data.sealed.rowCount ?? 0, "request")}, largest allocation {units(data.sealed.maxRowAllocatedUnits)} units.
+                        {" "}Governance sees totals and the commitment <code title={data.sealed.commitment ?? ""}>{short(data.sealed.commitment ?? "")}</code>, not who gets what.
+                      </p>
+                    )}
                     {status && status.policyVisible ? (
                       <ul className="checklist" aria-label={`Required approvals for ${data?.batchId}`}>
                         {status.roles.map((row) => {
@@ -322,6 +333,20 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                   </article>
                 );
               })}
+            </section>
+          )}
+
+          {sealedPending.length > 0 && (
+            <section className="card">
+              <h2><LockKeyhole size={18} /> Sealed batches to distribute</h2>
+              <p className="live-lede">Governance finalized these without seeing their rows. Opening the allocation book checks the rows against the approved commitment, then issues each investor a private record.</p>
+              {sealedPending.map(({ contractId, data }) => (
+                <div className="live-row" key={contractId}>
+                  <span><strong>{data?.batchId}</strong> · {units(data?.totalAllocated)} units across {plural(data?.sealed?.rowCount ?? 0, "request")}</span>
+                  <Action label="Open allocation book" tone="primary" disabled={writesOff}
+                    onRun={run("Distribution", () => api.distributeSealed(contractId))} />
+                </div>
+              ))}
             </section>
           )}
 

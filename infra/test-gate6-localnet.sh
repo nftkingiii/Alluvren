@@ -148,16 +148,17 @@ RECOVER=$(jq -cn --arg cid "$SOURCE" '[{ExerciseCommand:{templateId:"#alluvren-v
 ledger_submit "$(new_id recover)" "[\"$OP\"]" "$RECOVER" >/dev/null
 
 say 'Verify no active test batches, approvals, or proposals remain'
-query_count() {
-  local party=$1 entity=$2 response count
-  response=$(curl -fsS "$BASE:8082/contracts/query?party_id=$party&package_id=%23alluvren-v1&module_name=Alluvren.Redemption&entity_name=$entity&interface=false")
-  count=$(echo "$response" | jq -er '.contracts | length')
-  [[ $count -eq 0 ]] || fail "$count active $entity contract(s) remain for $party"
+# Only this run's contracts: other demos may legitimately leave their own.
+active_ids() {
+  local offset
+  offset=$(curl -fsS "$JSON_API/v2/state/ledger-end" -H "Authorization: Bearer $TOKEN" | jq -r '.offset')
+  curl -fsS "$JSON_API/v2/state/active-contracts" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "$(jq -cn --arg p "$1" --argjson off "$offset" '{filter:{filtersByParty:{($p):{cumulative:[{identifierFilter:{WildcardFilter:{value:{includeCreatedEventBlob:false}}}}]}}},verbose:false,activeAtOffset:$off}')" \
+    | jq -r '.. | objects | select(has("createdEvent")) | .createdEvent.contractId'
 }
-query_count "$OP" RedemptionBatch
-query_count "$FUND" RoleApproval
-query_count "$TREAS" RoleApproval
-query_count "$OP" RoleApproval
-query_count "$P1" FinalizeRedemption
+ACTIVE=$(for party in "$OP" "$FUND" "$TREAS" "$P1"; do active_ids "$party"; done | sort -u)
+for cid in "$SOURCE" "$TARGET" "${A[@]}" "${Q[@]}"; do
+  grep -qxF "$cid" <<<"$ACTIVE" && fail "test contract $cid is still active"
+done
 echo 'PASS: all test batches, approvals, and proposals are absent from the active contract set'
 echo "Alluvren Gate 6 tests passed. Source=$SOURCE Target=$TARGET StaleProposal=$STALE TamperProposal=$TAMPER ValidProposal=$VALID"

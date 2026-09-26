@@ -1,0 +1,17 @@
+module Alluvren.Allocation where
+
+import DA.List (sortOn)
+
+-- Largest remainder allocation over (requestId, requestedUnits, allocatedUnits)
+-- rows; equal remainders use request ID ascending. Shared by regular batches
+-- (Alluvren.Redemption) and sealed allocation books (Alluvren.Sealed).
+-- Bounded total units keep the integer product below the Int limit.
+largestRemainderValid : Int -> Int -> [(Text, Int, Int)] -> Bool
+largestRemainderValid requested allocated rows =
+  if requested <= 0 then False else
+    let product (_, req, _) = req * allocated
+        base r = product r / requested
+        ranked = sortOn (\r@(requestId, _, _) -> (negate (product r - base r * requested), requestId)) rows
+        remainder = allocated - sum (map base rows)
+        winners = map (\(requestId, _, _) -> requestId) (take remainder ranked)
+    in all (\r@(requestId, _, alloc) -> alloc == base r + (if elem requestId winners then 1 else 0)) rows

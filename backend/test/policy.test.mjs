@@ -69,3 +69,14 @@ test("legacy batches need the named fund and treasury reviewers; hidden policies
   assert.equal(hidden.policyVisible, false);
   assert.equal(hidden.complete, false);
 });
+
+test("sealed batches use the declared largest row for the concentration trigger", () => {
+  const sealed = (maxRowAllocatedUnits) => parseBatch({
+    batchId: "s", policyVersion: "demo-fund@v1", policyCid: "pol", fundReviewer: "coo", treasuryReviewer: "t1",
+    totalRequested: "2000", totalAllocated: "1000", rows: [], exceptions: null,
+    sealed: { commitment: "a".repeat(64), rowCount: "2", maxRowAllocatedUnits: String(maxRowAllocatedUnits) },
+  });
+  assert.equal(sealed(900).sealed.rowCount, 2);
+  assert.deepEqual(roles(effectiveRequirements(policy, sealed(800))), ["TreasuryReviewer:1", "AdministratorCheck:1", "FinalSignoff:1"]);
+  assert.deepEqual(roles(effectiveRequirements(policy, sealed(801))), ["TreasuryReviewer:2", "AdministratorCheck:1", "FinalSignoff:1"]);
+});

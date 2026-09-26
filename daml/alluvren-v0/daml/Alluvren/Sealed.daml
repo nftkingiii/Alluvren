@@ -1,0 +1,228 @@
+module Alluvren.Sealed where
+
+import DA.Action (void, when)
+import DA.Crypto.Text (sha256, toHex)
+import DA.Foldable (forA_, maximum)
+import DA.List (sortOn, unique)
+import qualified DA.Text as T
+import Alluvren.Allocation
+import Alluvren.Claims (ReceiptMode(..))
+import Splice.Util (require)
+
+-- Sealed batches keep per-investor rows away from the governance nodes.
+--
+-- Every node that hosts the governance party sees every contract the
+-- governance party is a stakeholder of. For a sealed batch, governance only
+-- sees totals, the row count, the largest single allocation and a SHA-256
+-- commitment to the rows (salted, so small row sets cannot be guessed). The
+-- rows live in an AllocationBook signed by the operator alone. After the
+-- governed finalization, the operator opens the book: the ledger checks the
+-- rows against the commitment, closes the governance-signed finalization
+-- exactly once, and issues each investor private records the governance nodes
+-- are not informed of.
+--
+-- Visibility follows Daml's privacy model: a party sees the actions it is an
+-- informee of and their consequences, not the enclosing action. Distribution
+-- runs as a choice on the operator's book; the governance party is an informee
+-- only of the nested SealedFinalization_Close, which carries no rows.
+
+-- What governance approves instead of the rows.
+data SealedSummary = SealedSummary
+  with
+    commitment : Text
+      -- ^ Lowercase hex SHA-256 of sealedRowsText salt rows.
+    rowCount : Int
+    maxRowAllocatedUnits : Int
+      -- ^ Largest allocation in any single row; feeds InvestorShareAboveBps.
+  deriving (Eq, Show)
+
+data SealedRow = SealedRow
+  with
+    requestId : Text
+    investor : Party
+    requestedUnits : Int
+    allocatedUnits : Int
+  deriving (Eq, Show)
+
+validSummary : Int -> SealedSummary -> Bool
+validSummary totalAllocated s =
+  T.length s.commitment == 64
+    && s.rowCount >= 1
+    && s.maxRowAllocatedUnits >= 0
+    && s.maxRowAllocatedUnits <= totalAllocated
+    && (totalAllocated == 0 || s.maxRowAllocatedUnits > 0)
+
+-- Canonical text the commitment is taken over: the salt, then one line per
+-- row sorted by request ID. Off-ledger tools compute SHA-256 over the same
+-- UTF-8 text.
+sealedRowsText : Text -> [SealedRow] -> Text
+sealedRowsText salt rows =
+  let line r = r.requestId <> "|" <> partyToText r.investor <> "|" <> show r.requestedUnits <> "|" <> show r.allocatedUnits
+  in T.intercalate "\n" (salt :: map line (sortOn (.requestId) rows))
+
+sealRows : Text -> [SealedRow] -> Text
+sealRows salt rows = sha256 (toHex (sealedRowsText salt rows))
+
+-- Signed by governance when a sealed batch passes RedemptionBatch_FinalizeWithPolicy.
+-- It records who approved, so the book can check no approver is an investor.
+template SealedFinalization
+  with
+    governanceParty : Party
+    operator : Party
+    batchId : Text
+    policyVersion : Text
+    totalRequested : Int
+    totalAllocated : Int
+    summary : SealedSummary
+    approvers : [Party]
+    finalizedAt : Time
+  where
+    signatory governanceParty
+    observer operator
+
+    -- Consuming, so a finalized batch is distributed at most once.
+    choice SealedFinalization_Close : SealedFinalization
+      controller operator
+      do pure this
+
+-- The per-investor rows of a sealed batch, visible to the operator only.
+template AllocationBook
+  with
+    operator : Party
+    governanceParty : Party
+    batchId : Text
+    policyVersion : Text
+    salt : Text
+    rows : [SealedRow]
+  where
+    signatory operator
+
+    ensure T.length salt >= 32
+        && not (null rows)
+        && unique (map (.requestId) rows)
+        && all (\r -> r.requestId /= ""
+          && not (T.isInfixOf "|" r.requestId) && not (T.isInfixOf "\n" r.requestId)
+          && r.requestedUnits > 0 && r.allocatedUnits >= 0 && r.allocatedUnits <= r.requestedUnits
+          && r.investor /= operator && r.investor /= governanceParty) rows
+
+    choice AllocationBook_Distribute : ()
+      with
+        finalizationCid : ContractId SealedFinalization
+      controller operator
+      do
+        fin <- exercise finalizationCid SealedFinalization_Close
+        let requested = sum (map (.requestedUnits) rows)
+            allocated = sum (map (.allocatedUnits) rows)
+            investors = map (.investor) rows
+        require "Finalization belongs to another batch"
+          (fin.batchId == batchId && fin.policyVersion == policyVersion
+            && fin.governanceParty == governanceParty && fin.operator == operator)
+        require "Rows do not match the commitment governance approved"
+          (sealRows salt rows == fin.summary.commitment)
+        require "Row count does not match" (length rows == fin.summary.rowCount)
+        require "Totals do not match" (requested == fin.totalRequested && allocated == fin.totalAllocated)
+        require "Declared largest allocation does not match the rows"
+          (maximum (map (.allocatedUnits) rows) == fin.summary.maxRowAllocatedUnits)
+        require "Allocation is not the largest-remainder split"
+          (largestRemainderValid requested allocated (map (\r -> (r.requestId, r.requestedUnits, r.allocatedUnits)) rows))
+        require "An approver is an investor in this batch"
+          (not (any (`elem` investors) fin.approvers))
+        forA_ rows \r -> do
+          when (r.allocatedUnits > 0) do
+            void $ create PrivateEntitlement with
+              operator
+              investor = r.investor
+              batchId
+              policyVersion
+              requestId = r.requestId
+              units = r.allocatedUnits
+              commitment = fin.summary.commitment
+          let outstanding = r.requestedUnits - r.allocatedUnits
+          when (outstanding > 0) do
+            void $ create PrivateOutstanding with
+              operator
+              investor = r.investor
+              batchId
+              policyVersion
+              requestId = r.requestId
+              units = outstanding
+              commitment = fin.summary.commitment
+
+-- Investor records of a sealed batch: signed by the operator, seen only by
+-- the operator and that investor. commitment ties them to what governance
+-- approved. Demo records, as in Alluvren.Claims: no asset moves.
+template PrivateEntitlement
+  with
+    operator : Party
+    investor : Party
+    batchId : Text
+    policyVersion : Text
+    requestId : Text
+    units : Int
+    commitment : Text
+  where
+    signatory operator
+    observer investor
+
+    ensure units > 0 && investor /= operator
+
+    choice PrivateEntitlement_Acknowledge : ContractId PrivateClaimReceipt
+      controller investor
+      do
+        now <- getTime
+        create PrivateClaimReceipt with
+          operator; investor; batchId; policyVersion; requestId; units; commitment
+          acknowledgedAt = now
+          mode = DemoAcknowledgment
+
+template PrivateClaimReceipt
+  with
+    operator : Party
+    investor : Party
+    batchId : Text
+    policyVersion : Text
+    requestId : Text
+    units : Int
+    commitment : Text
+    acknowledgedAt : Time
+    mode : ReceiptMode
+  where
+    signatory operator, investor
+
+template PrivateOutstanding
+  with
+    operator : Party
+    investor : Party
+    batchId : Text
+    policyVersion : Text
+    requestId : Text
+    units : Int
+    commitment : Text
+  where
+    signatory operator
+    observer investor
+
+    ensure units > 0 && investor /= operator
+
+    choice PrivateOutstanding_Withdraw : ContractId PrivateReleaseReceipt
+      controller investor
+      do
+        now <- getTime
+        create PrivateReleaseReceipt with
+          operator; investor; batchId; policyVersion; requestId; units; commitment
+          releasedAt = now
+          mode = DemoAcknowledgment
+
+template PrivateReleaseReceipt
+  with
+    operator : Party
+    investor : Party
+    batchId : Text
+    policyVersion : Text
+    requestId : Text
+    units : Int
+    commitment : Text
+    releasedAt : Time
+    mode : ReceiptMode
+  where
+    signatory operator, investor

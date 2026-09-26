@@ -185,6 +185,30 @@ LocalNet verification: see the next section. Known limits: in-memory sessions; o
 
 Leftovers: two earlier interrupted runs (`g8-1790354711`, `g8-1790354785`) left their FundPolicy, an unfinalized batch and their approvals on LocalNet (approvals expire after 30 minutes; their failed proposals were cancelled). Still unverified: per-user ledger credentials (one shared ledger user acts for all parties, so backend checks are the party boundary); the Live ledger UI against LocalNet in a browser (the run drove the same HTTP API, not the UI).
 
+## Fresh-LocalNet reproduction, backup hosting, sealed batches (2026-09-26)
+
+A judge's path from zero, run on the VM as the non-root account that owns the DecMan checkout (`aa13fa9`, `hackathon` branch): `reset.sh --yes`, `up.sh`, `seed.sh`, `bash infra/setup-localnet.sh` (twice), `bash infra/demo-localnet.sh --all`. Exit 0; run 04:17Z. Earlier attempts on the same day found and fixed the issues listed at the end of this section.
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Fresh setup | `alluvren-v1` 0.4.0 distributed and vetted on all three participants for the first time; four named parties and two pseudonymous investors (`inv-365d…`, `inv-4392…`) allocated on node 2; all six added to node 1 as backup hosts; `alluvren-operator` added to GovernanceRules' additional proposers, confirmed by the members on nodes 2 and 3; second run changed nothing | PASS |
+| Shared control | One confirmation rejected; policy created with two; threshold reached but missing Compliance rejected; executed with Compliance; superseded policy blocks a pinned batch (`p10-1790395509`) | PASS |
+| Signed-in app | Seven accounts through the backend: own-party approvals, forged `actAs` ignored, Daml rejection surfaced, below-threshold execute refused, operator (an additional proposer) proposes and withdraws its own rejected proposal, investor acts once | PASS |
+| Sealed batch | Batch `sealed-1790395810-b1` (1,000 requested, 500 allocated, 2 rows, commitment `ee8196e4…`). Approved, proposed, confirmed and executed through the backend; governance signed a `SealedFinalization`. Node 3 (governance only) held exactly one contract for the batch, the finalization, and no investor party, request ID, salt or per-investor amount. A book with a different salt was rejected: `Rows do not match the commitment governance approved`. The operator distributed once (second attempt 404); investor A saw only 300, B only 200; A acknowledged once; node 3 held no private records afterwards | PASS |
+| Node 1 outage | Governance continued on nodes 2 and 3; one member left could not execute; node 1 caught up (ledger 382 → 430) and executed the waiting proposal | PASS |
+| Node 2 (business node) outage | Node 2 refused commands (`NOT_CONNECTED_TO_ANY_SYNCHRONIZER`); the operator proposed a policy and a batch through node 1; the backend (configured node 2, node 1) failed over: three approvals, the operator's proposal, execution by members 1 and 3, and the investor's acknowledgment (400) and withdrawal (600); node 2 caught up (ledger 467 → 509) | PASS |
+| Legacy checks | Gate 6 threshold/stale/tamper/replay and Gate 7 investor privacy on the upgraded package | PASS |
+| Cleanup | Uploaded files removed; three DecMan nodes healthy; VM stopped and verified `TERMINATED`. One stopped `alluvren*` container from an earlier interrupted run remains on the VM (not restarted on boot) | PASS |
+
+Local verification of the same changes: Daml Script 19/19 (7 new sealed tests), six sealed-batch mutations each caught; backend 21/21 including four failover tests and a stale-participant test, with five failover mutations caught; frontend unit 6/6, production build, Playwright 10/10 (new sealed operator journey).
+
+Found and fixed during these runs:
+- Windows checkouts turned `SHA256SUMS.txt` into CRLF and broke the checksum lookup: setup strips `\r`, and `.gitattributes` pins the file to LF and marks DARs binary.
+- The Docker fallback ran the backend container as root, so a non-root judge could not read the throwaway account files: containers now run as the calling user.
+- `canton_console` wrote its config with `docker exec` without `-i` (empty file). Right after `up.sh` the console and node 1's JSON API can also be briefly unavailable: setup waits for the JSON APIs, the console retries three times, and setup trusts only the hosting state it reads back.
+- GovernanceRules only accepts proposals from members or its additional proposers: setup now registers the operator through a governed self-action.
+- Gate 6's cleanup check counted every batch on the ledger; it now checks only its own contracts.
+
 ## Reproducible setup and one-command demos on BitSafe LocalNet (2026-09-25)
 
 `infra/localnet-env.sh` discovers every ID from the running LocalNet: the governance party (by `PARTY_PREFIX`, default `demo-party`), the GovernanceRules contract, the member hosted on each node (matched by participant namespace), and the business parties. `infra/setup-localnet.sh` checks the DAR checksum, distributes `alluvren-v1` 0.3.0 through DecMan (skipped if vetted), and allocates six named parties on node 2 (`alluvren-operator`, `-treasury`, `-coo`, `-compliance`, `-investor-a`, `-investor-b`). `infra/demo-localnet.sh` runs the demonstrations. The judge's guide is `REPRODUCE.md`. The scripts no longer contain party IDs or VM paths; dates work with GNU and BSD `date`; the Gate 8 backend runs from the repo (host Node 20+, otherwise `node:22-alpine`).
@@ -196,7 +220,7 @@ Leftovers: two earlier interrupted runs (`g8-1790354711`, `g8-1790354785`) left 
 | All demonstrations with the generic scripts | `demo-localnet.sh --all` against the new `alluvren-*` parties: shared control/policy (`p10-1790356925`), signed-in app flow, node outage (node 1 ledger 3189 → 3232 after reconnect), legacy threshold/replay, and legacy investor privacy (`gate7-1790357484`) all passed; exit 0 | PASS |
 | Cleanup | Temporary files removed, no backend container left, three DecMan nodes healthy; VM stopped and verified `TERMINATED` | PASS |
 
-Not yet verified: a run from a freshly reset LocalNet (`reset.sh`, `up.sh`, `seed.sh`, first-time DAR distribution), a run on macOS or with host Node (the VM used the Docker fallback), and a run by someone other than the developer.
+A run from a freshly reset LocalNet was verified on 2026-09-26 (section above). Still not verified: a run on macOS or with host Node (the VM used the Docker fallback) and a run by someone other than the developer.
 
 ## Distributed hosting: node outage on BitSafe LocalNet (2026-09-25)
 
@@ -244,6 +268,10 @@ Not shown: two hosting participants offline at once (node 3's participant stayed
 | Fresh Daml compile in this session | NOT RUN; `dpm` and `daml` are not installed on the Windows PATH. Previously recorded Daml Script tests remain the available evidence. |
 
 ## Still unverified
+
+- A reproduction by someone other than the developer, and on macOS or with host Node.
+- Two hosting participants offline at the same time (the SV participant was not disconnected because it also runs LocalNet's Super Validator).
+- Sealed batches rely on `DA.Crypto.Text.sha256`, an alpha Daml feature; it compiled for LF 2.2 and ran on this LocalNet, but its long-term stability is Daml's to decide.
 
 - Alluvren DAR distribution to the BitSafe LocalNet participants is verified. Distribution to any future Gold or external participant remains unverified.
 - Independent external-operator reproduction and investor privacy behavior.

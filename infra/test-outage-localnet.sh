@@ -31,15 +31,10 @@ T_CLAIMS='#alluvren-v1:Alluvren.Claims'
 stamp() { date -u +%H:%M:%SZ; }
 new_id() { printf '%s-%s-%s' "$RUN" "$1" "$(uid)"; }
 
-# --- Canton console against node 1's participant (admin API only) ----------
-console() {
-  docker exec canton sh -c 'mkdir -p /tmp/outage && printf "%s\n" "canton.remote-participants.node1 { admin-api { address = \"127.0.0.1\", port = 3902 }, ledger-api { address = \"127.0.0.1\", port = 3901 } }" > /tmp/outage/remote.conf'
-  printf '%s\n' "$1" | docker exec -i canton sh -c 'cat > /tmp/outage/cmd.sc'
-  docker exec canton /app/bin/canton run /tmp/outage/cmd.sc -c /tmp/outage/remote.conf 2>&1 | grep -E '^RESULT' || true
-}
-node1_connected() { console 'println("RESULT " + node1.synchronizers.list_connected().size)' | awk '{print $2}'; }
-node1_down() { docker stop decman-1 >/dev/null; console 'node1.synchronizers.disconnect_all(); println("RESULT done")' >/dev/null; }
-node1_up() { console 'node1.synchronizers.reconnect_all(); println("RESULT done")' >/dev/null; docker start decman-1 >/dev/null; }
+# --- node 1's participant through the Canton console (canton_console) -------
+node1_connected() { canton_console 'println("RESULT " + node1.synchronizers.list_connected().size)' | awk '/^RESULT/{print $2}'; }
+node1_down() { docker stop decman-1 >/dev/null; canton_console 'node1.synchronizers.disconnect_all(); println("RESULT done")' >/dev/null; }
+node1_up() { canton_console 'node1.synchronizers.reconnect_all(); println("RESULT done")' >/dev/null; docker start decman-1 >/dev/null; }
 restore() {
   local code=$?
   if [[ ${RESTORED:-0} != 1 ]]; then
@@ -47,7 +42,6 @@ restore() {
     docker start decman-3 >/dev/null 2>&1 || true
     node1_up || true
   fi
-  docker exec canton rm -rf /tmp/outage >/dev/null 2>&1 || true
 }
 trap restore EXIT
 

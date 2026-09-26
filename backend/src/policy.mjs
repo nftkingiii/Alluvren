@@ -41,6 +41,17 @@ export function parseBatch(argument) {
     rows: list(argument?.rows).map((r) => ({ allocatedUnits: int(r?.allocatedUnits) ?? 0 })),
     exceptions: list(argument?.exceptions),
     policyCid: typeof argument?.policyCid === "string" ? argument.policyCid : null,
+    sealed: parseSealed(argument?.sealed),
+  };
+}
+
+// Sealed batches (Alluvren.Sealed) carry a summary instead of rows.
+export function parseSealed(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    commitment: typeof value.commitment === "string" ? value.commitment : "",
+    rowCount: int(value.rowCount) ?? 0,
+    maxRowAllocatedUnits: int(value.maxRowAllocatedUnits) ?? 0,
   };
 }
 
@@ -49,8 +60,10 @@ export function triggerHolds(batch, trigger) {
     case "FundedBelowBps":
       return batch.totalAllocated * 10000 < trigger.bps * batch.totalRequested;
     case "InvestorShareAboveBps":
-      return batch.totalAllocated > 0
-        && batch.rows.some((r) => r.allocatedUnits * 10000 > trigger.bps * batch.totalAllocated);
+      if (batch.totalAllocated <= 0) return false;
+      // A sealed batch declares its largest row; the ledger checks it when the book is opened.
+      if (batch.sealed) return batch.sealed.maxRowAllocatedUnits * 10000 > trigger.bps * batch.totalAllocated;
+      return batch.rows.some((r) => r.allocatedUnits * 10000 > trigger.bps * batch.totalAllocated);
     case "ExceptionsPresent":
       return batch.exceptions.length > 0;
     default:

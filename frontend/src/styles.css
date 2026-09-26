@@ -3636,6 +3636,11 @@ code,
 .check-reason { color: var(--warn); font-size: var(--text-sm); }
 .approved-tag { display: inline-flex; align-items: center; gap: 6px; color: var(--sage); font-size: var(--text-sm); font-weight: 650; }
 .live-hint { color: var(--warn); font-size: var(--text-sm); margin: 0; }
+/* Sealed batches: governance saw totals and a commitment, not the rows. */
+.sealed-note { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin: 8px 0 0; color: var(--muted); font-size: var(--text-sm); }
+.sealed-note svg { flex: none; align-self: center; }
+.sealed-note code { font-size: var(--text-xs); overflow-wrap: anywhere; }
+.sealed-tag { margin-left: 8px; padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--muted); font-size: var(--text-xs); font-weight: 650; letter-spacing: 0.02em; }
 
 /* Governance progress. */
 .progress { display: inline-grid; grid-auto-flow: column; gap: 3px; vertical-align: middle; }

@@ -1,0 +1,233 @@
+module Alluvren.SealedTest where
+
+import Daml.Script
+import DA.Foldable (maximum)
+import qualified DA.Text as T
+import DA.Time (addRelTime, hours)
+import Alluvren.Claims
+import Alluvren.PolicyTest
+import Alluvren.Redemption
+import Alluvren.Sealed
+
+-- Sealed batches (daml/DESIGN.md S-01..S-07): governance approves totals and a
+-- commitment; per-investor rows and records stay between the operator and each
+-- investor. Uses the P-series fund policy from PolicyTest.
+
+testSalt : Text
+testSalt = "5f0c1a9e7b2d4c6f8a1e3b5d7f9c2a4e"
+
+-- Funded 50%, largest row 60% of allocated units: only base roles required.
+bookRows : Env -> [SealedRow]
+bookRows e = [SealedRow "r-1" e.inv1 600 300, SealedRow "r-2" e.inv2 400 200]
+
+summaryOf : [SealedRow] -> SealedSummary
+summaryOf rows = SealedSummary with
+  commitment = sealRows testSalt rows
+  rowCount = length rows
+  maxRowAllocatedUnits = maximum (map (.allocatedUnits) rows)
+
+-- The operator both proposes the sealed batch and holds its book.
+makeSealedBatch : Env -> ContractId FundPolicy -> FundPolicy -> Text -> [SealedRow] -> SealedSummary -> Script (ContractId RedemptionBatch)
+makeSealedBatch e policyCid policy batchId rows summary = do
+  now <- getTime
+  submit e.op $ createCmd RedemptionBatch with
+    governanceParty = e.gov
+    proposer = e.op
+    operator = e.op
+    fundReviewer = e.coo
+    treasuryReviewer = e.t1
+    policyVersion = policyVersionLabel policy
+    batchId
+    rows = []
+    totalRequested = sum (map (.requestedUnits) rows)
+    totalAllocated = sum (map (.allocatedUnits) rows)
+    recoveryDeadline = addRelTime now (hours 1)
+    policyCid = Some policyCid
+    policyMembers = Some (policyMemberSet policy)
+    exceptions = None
+    sealed = Some summary
+
+makeBook : Env -> FundPolicy -> Text -> [SealedRow] -> Script (ContractId AllocationBook)
+makeBook e policy batchId rows =
+  submit e.op $ createCmd AllocationBook with
+    operator = e.op
+    governanceParty = e.gov
+    batchId
+    policyVersion = policyVersionLabel policy
+    salt = testSalt
+    rows
+
+baseApprovals : Env -> FundPolicy -> ContractId RedemptionBatch -> Text -> Script [ContractId RoleApproval]
+baseApprovals e policy batchCid batchId = do
+  a1 <- approve e policy batchCid batchId e.t1 TreasuryReviewer
+  a2 <- approve e policy batchCid batchId e.adm AdministratorCheck
+  a3 <- approve e policy batchCid batchId e.coo FinalSignoff
+  pure [a1, a2, a3]
+
+-- Finalizes a sealed batch as governance would and returns its finalization.
+finalizeSealed : Env -> FundPolicy -> Text -> [SealedRow] -> Script (ContractId SealedFinalization)
+finalizeSealed e policy batchId rows = do
+  (policyCid, _) <- currentPolicy e
+  batchCid <- makeSealedBatch e policyCid policy batchId rows (summaryOf rows)
+  approvals <- baseApprovals e policy batchCid batchId
+  finalize e batchCid approvals
+  fins <- query @SealedFinalization e.op
+  case [cid | (cid, f) <- fins, f.batchId == batchId] of
+    [cid] -> pure cid
+    _ -> abort "expected one sealed finalization"
+
+-- S-01: governance finalizes without seeing rows; each investor sees only its
+-- own private records; governance and other investors see none of them.
+testSealedFlow : Script ()
+testSealedFlow = script do
+  (e, _, policy) <- setupPolicy
+  let rows = bookRows e
+  bookCid <- makeBook e policy "sealed-1" rows
+  finCid <- finalizeSealed e policy "sealed-1" rows
+
+  -- No governance-signed per-investor records; governance cannot see the book.
+  entitlements <- query @ClaimEntitlement e.gov
+  assertMsg "sealed finalization must not create governance-signed investor records" (null entitlements)
+  books <- query @AllocationBook e.gov
+  assertMsg "governance must not see the allocation book" (null books)
+  Some fin <- queryContractId e.gov finCid
+  assertMsg "finalization carries totals and the commitment only" (fin.totalAllocated == 500 && fin.summary.rowCount == 2)
+
+  submit e.op $ exerciseCmd bookCid AllocationBook_Distribute with finalizationCid = finCid
+
+  govPrivate <- query @PrivateEntitlement e.gov
+  govOutstanding <- query @PrivateOutstanding e.gov
+  assertMsg "governance must not see private investor records" (null govPrivate && null govOutstanding)
+  mine1 <- query @PrivateEntitlement e.inv1
+  mine2 <- query @PrivateEntitlement e.inv2
+  assertMsg "investor 1 sees exactly its own 300 units" (map ((.units) . snd) mine1 == [300] && all ((== e.inv1) . (.investor) . snd) mine1)
+  assertMsg "investor 2 sees exactly its own 200 units" (map ((.units) . snd) mine2 == [200] && all ((== e.inv2) . (.investor) . snd) mine2)
+  reviewers <- query @PrivateEntitlement e.t1
+  assertMsg "reviewers see no investor records" (null reviewers)
+  gone <- queryContractId e.op finCid
+  assertMsg "the finalization is closed by distribution" (gone == None)
+
+  -- Acknowledge and withdraw exactly once.
+  let [(ent1, _)] = mine1
+  _ <- submit e.inv1 $ exerciseCmd ent1 PrivateEntitlement_Acknowledge
+  submitMustFail e.inv1 $ exerciseCmd ent1 PrivateEntitlement_Acknowledge
+  submitMustFail e.inv2 $ exerciseCmd ent1 PrivateEntitlement_Acknowledge
+  [(out1, o1)] <- query @PrivateOutstanding e.inv1
+  assertMsg "investor 1 has 300 outstanding" (o1.units == 300)
+  _ <- submit e.inv1 $ exerciseCmd out1 PrivateOutstanding_Withdraw
+  submitMustFail e.inv1 $ exerciseCmd out1 PrivateOutstanding_Withdraw
+  receipts <- query @PrivateClaimReceipt e.gov
+  assertMsg "governance does not see private receipts" (null receipts)
+
+-- S-02: a book whose rows differ from the committed ones cannot be opened; the
+-- finalization stays open and the correct book still distributes.
+testSealedTamperedBook : Script ()
+testSealedTamperedBook = script do
+  (e, _, policy) <- setupPolicy
+  let rows = bookRows e
+      -- Same totals, but investor 2 is swapped for an outsider.
+      forged = [SealedRow "r-1" e.inv1 600 300, SealedRow "r-2" e.outsider 400 200]
+  finCid <- finalizeSealed e policy "sealed-2" rows
+  forgedBook <- makeBook e policy "sealed-2" forged
+  submitMustFail e.op $ exerciseCmd forgedBook AllocationBook_Distribute with finalizationCid = finCid
+  still <- queryContractId e.op finCid
+  assertMsg "finalization stays open after a rejected book" (still /= None)
+  realBook <- makeBook e policy "sealed-2" rows
+  submit e.op $ exerciseCmd realBook AllocationBook_Distribute with finalizationCid = finCid
+  outsider <- query @PrivateEntitlement e.outsider
+  assertMsg "the forged investor received nothing" (null outsider)
+
+-- S-03: a finalized batch is distributed at most once.
+testSealedDistributedOnce : Script ()
+testSealedDistributedOnce = script do
+  (e, _, policy) <- setupPolicy
+  let rows = bookRows e
+  finCid <- finalizeSealed e policy "sealed-3" rows
+  first <- makeBook e policy "sealed-3" rows
+  second <- makeBook e policy "sealed-3" rows
+  submit e.op $ exerciseCmd first AllocationBook_Distribute with finalizationCid = finCid
+  submitMustFail e.op $ exerciseCmd second AllocationBook_Distribute with finalizationCid = finCid
+  mine <- query @PrivateEntitlement e.inv1
+  assertMsg "investor 1 has exactly one entitlement" (length mine == 1)
+
+-- S-04: the declared largest allocation drives InvestorShareAboveBps at
+-- finalization; understating it to dodge the trigger fails at distribution.
+testSealedDeclaredMaximum : Script ()
+testSealedDeclaredMaximum = script do
+  (e, policyCid, policy) <- setupPolicy
+  -- One investor holds 90% of allocated units: Treasury 2-of-2 is required.
+  let concentrated = [SealedRow "r-1" e.inv1 1800 900, SealedRow "r-2" e.inv2 200 100]
+      honest = summaryOf concentrated
+  batchCid <- makeSealedBatch e policyCid policy "sealed-4" concentrated honest
+  approvals <- baseApprovals e policy batchCid "sealed-4"
+  finalizeMustFail e batchCid approvals
+  t2 <- approve e policy batchCid "sealed-4" e.t2 TreasuryReviewer
+  finalize e batchCid (t2 :: approvals)
+
+  -- Understated maximum: governance asks for fewer approvals, but the book
+  -- cannot be opened, so no investor is paid.
+  let understated = honest with maxRowAllocatedUnits = 700
+  cheatCid <- makeSealedBatch e policyCid policy "sealed-4b" concentrated understated
+  cheatApprovals <- baseApprovals e policy cheatCid "sealed-4b"
+  finalize e cheatCid cheatApprovals
+  fins <- query @SealedFinalization e.op
+  let [finCid] = [cid | (cid, f) <- fins, f.batchId == "sealed-4b"]
+  book <- makeBook e policy "sealed-4b" concentrated
+  submitMustFail e.op $ exerciseCmd book AllocationBook_Distribute with finalizationCid = finCid
+
+-- S-05: an approver who is secretly an investor blocks distribution.
+testSealedApproverIsInvestor : Script ()
+testSealedApproverIsInvestor = script do
+  (e, _, policy) <- setupPolicy
+  let rows = [SealedRow "r-1" e.inv1 600 300, SealedRow "r-2" e.t1 400 200]
+  finCid <- finalizeSealed e policy "sealed-5" rows
+  book <- makeBook e policy "sealed-5" rows
+  submitMustFail e.op $ exerciseCmd book AllocationBook_Distribute with finalizationCid = finCid
+
+-- S-06: sealed batches carry no rows, need a policy, and are proposed by the
+-- operator; books need a long salt and clean request IDs.
+testSealedValidation : Script ()
+testSealedValidation = script do
+  (e, policyCid, policy) <- setupPolicy
+  let rows = bookRows e
+      summary = summaryOf rows
+  now <- getTime
+  let batch = RedemptionBatch with
+        governanceParty = e.gov
+        proposer = e.op
+        operator = e.op
+        fundReviewer = e.coo
+        treasuryReviewer = e.t1
+        policyVersion = policyVersionLabel policy
+        batchId = "sealed-6"
+        rows = []
+        totalRequested = 1000
+        totalAllocated = 500
+        recoveryDeadline = addRelTime now (hours 1)
+        policyCid = Some policyCid
+        policyMembers = Some (policyMemberSet policy)
+        exceptions = None
+        sealed = Some summary
+  _ <- submit e.op $ createCmd batch
+  submitMustFail e.op $ createCmd batch with rows = [AllocationRow "r-1" e.inv1 600 300]
+  submitMustFail e.prop $ createCmd batch with proposer = e.prop
+  submitMustFail e.op $ createCmd batch with policyCid = None; policyMembers = None
+  submitMustFail e.op $ createCmd batch with sealed = Some summary with commitment = "abc"
+  submitMustFail e.op $ createCmd batch with sealed = Some summary with maxRowAllocatedUnits = 600
+  submitMustFail e.op $ createCmd AllocationBook with
+    operator = e.op; governanceParty = e.gov; batchId = "sealed-6"
+    policyVersion = policyVersionLabel policy; salt = "short"; rows
+  submitMustFail e.op $ createCmd AllocationBook with
+    operator = e.op; governanceParty = e.gov; batchId = "sealed-6"
+    policyVersion = policyVersionLabel policy; salt = testSalt
+    rows = [SealedRow "r|1" e.inv1 600 300]
+
+-- S-07: the commitment is plain SHA-256 over the canonical UTF-8 text, so
+-- off-ledger tools can compute it.
+testSealedCommitmentFormat : Script ()
+testSealedCommitmentFormat = script do
+  e <- setupParties
+  let rows = [SealedRow "r-2" e.inv2 400 200, SealedRow "r-1" e.inv1 600 300]
+      expectedText = testSalt <> "\nr-1|" <> partyToText e.inv1 <> "|600|300\nr-2|" <> partyToText e.inv2 <> "|400|200"
+  assertMsg "rows are sorted by request ID in the canonical text" (sealedRowsText testSalt rows == expectedText)
+  assertMsg "commitment is 64 hex characters" (T.length (sealRows testSalt rows) == 64)

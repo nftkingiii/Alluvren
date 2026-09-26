@@ -2,9 +2,11 @@ module Alluvren.Redemption where
 
 import DA.Action (void, when)
 import DA.Foldable (forA_, maximum)
-import DA.List (unique, sortOn, dedup)
+import DA.List (unique, dedup)
 import DA.Optional (fromOptional, isSome)
+import Alluvren.Allocation
 import Alluvren.Claims
+import Alluvren.Sealed
 import Governance.Action
 import Splice.Util (require)
 
@@ -96,6 +98,10 @@ template RedemptionBatch
     policyCid : Optional (ContractId FundPolicy)
     policyMembers : Optional [Party]
     exceptions : Optional [ExceptionNote]
+    -- Sealed batches (0.4.0+) carry no rows: governance approves totals and a
+    -- commitment, and the rows stay in the operator's AllocationBook (see
+    -- Alluvren.Sealed). They need a fund policy and proposer == operator.
+    sealed : Optional SealedSummary
   where
     signatory proposer
     observer governanceParty, operator, fundReviewer, treasuryReviewer, fromOptional [] policyMembers
@@ -109,18 +115,26 @@ template RedemptionBatch
         && proposer /= treasuryReviewer
         && fundReviewer /= governanceParty
         && treasuryReviewer /= governanceParty
-        && not (null rows)
-        && all (\r -> r.requestId /= "" && r.requestedUnits > 0
-          && r.allocatedUnits >= 0 && r.allocatedUnits <= r.requestedUnits) rows
         && totalRequested >= 0
         && totalRequested <= 1000000000
         && totalAllocated >= 0
         && totalAllocated <= totalRequested
-        && totalAllocated == sum (map (.allocatedUnits) rows)
-        && totalRequested == sum (map (.requestedUnits) rows)
-        && unique (map (.requestId) rows)
-        && validAllocation totalRequested totalAllocated rows
         && isSome policyCid == isSome policyMembers
+        && (case sealed of
+          None ->
+            not (null rows)
+              && all (\r -> r.requestId /= "" && r.requestedUnits > 0
+                && r.allocatedUnits >= 0 && r.allocatedUnits <= r.requestedUnits) rows
+              && totalAllocated == sum (map (.allocatedUnits) rows)
+              && totalRequested == sum (map (.requestedUnits) rows)
+              && unique (map (.requestId) rows)
+              && validAllocation totalRequested totalAllocated rows
+          Some summary ->
+            null rows
+              && totalRequested > 0
+              && isSome policyCid
+              && proposer == operator
+              && validSummary totalAllocated summary)
 
     choice RedemptionBatch_Finalize : FinalizationRecord
       with
@@ -198,7 +212,19 @@ template RedemptionBatch
         forA_ required \r ->
           require ("Missing required approvals for role " <> show r.role)
             (length (filter (\a -> a.role == r.role) approvals) >= r.quorum)
-        createInvestorRecords governanceParty batchId policyVersion rows
+        case sealed of
+          None -> createInvestorRecords governanceParty batchId policyVersion rows
+          -- The operator's AllocationBook is checked against this when opened.
+          Some summary -> void $ create SealedFinalization with
+            governanceParty
+            operator
+            batchId
+            policyVersion
+            totalRequested
+            totalAllocated
+            summary
+            approvers
+            finalizedAt = now
         pure FinalizationRecord with
           batchId
           policyVersion
@@ -237,17 +263,10 @@ createInvestorRecords governanceParty batchId policyVersion rows =
         requestId = r.requestId
         units = outstanding
 
--- Largest remainder allocation; equal remainders use request ID ascending.
--- Bounded total units keep the integer product below the Int limit.
+-- Largest remainder allocation (Alluvren.Allocation).
 validAllocation : Int -> Int -> [AllocationRow] -> Bool
 validAllocation requested allocated rows =
-  if requested <= 0 then False else
-    let product r = r.requestedUnits * allocated
-        base r = product r / requested
-        ranked = sortOn (\r -> (negate (product r - base r * requested), r.requestId)) rows
-        remainder = allocated - sum (map base rows)
-        winners = map (.requestId) (take remainder ranked)
-    in all (\r -> r.allocatedUnits == base r + (if elem r.requestId winners then 1 else 0)) rows
+  largestRemainderValid requested allocated (map (\r -> (r.requestId, r.requestedUnits, r.allocatedUnits)) rows)
 
 -- DecMan discovers this proposal through Governance.Action. GovernanceRules
 -- confirms and executes it by ContractId; BitSafe threshold approval is outside
@@ -379,7 +398,10 @@ triggerHolds : RedemptionBatch -> Trigger -> Bool
 triggerHolds b (FundedBelowBps bps) = b.totalAllocated * 10000 < bps * b.totalRequested
 triggerHolds b (InvestorShareAboveBps bps) =
   b.totalAllocated > 0
-    && any (\r -> r.allocatedUnits * 10000 > bps * b.totalAllocated) b.rows
+    && case b.sealed of
+      None -> any (\r -> r.allocatedUnits * 10000 > bps * b.totalAllocated) b.rows
+      -- Checked against the real rows when the AllocationBook is opened.
+      Some summary -> summary.maxRowAllocatedUnits * 10000 > bps * b.totalAllocated
 triggerHolds b ExceptionsPresent = not (null (fromOptional [] b.exceptions))
 
 -- Base requirements plus every triggered conditional requirement, merged per

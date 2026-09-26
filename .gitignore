@@ -10,3 +10,8 @@ internal/
 decentralization-manager/
 accounts.json
 **/accounts.json
+
+# Internal planning notes (kept local, never pushed)
+BUILD_EXECUTION_PLAN.md
+LUNA_HANDOFF.md
+PROJECT_STATE.md

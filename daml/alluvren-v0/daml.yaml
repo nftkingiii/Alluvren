@@ -1,6 +1,6 @@
 sdk-version: 3.4.11
 name: alluvren-v1
-version: 0.3.0
+version: 0.4.0
 source: daml
 dependencies:
   - daml-prim
@@ -10,6 +10,7 @@ data-dependencies:
   - ../../decentralization-manager/daml/dars/splice-util-0.1.4.dar
 build-options:
   - --target=2.2
+  - -Wno-crypto-text-is-alpha
   - --ghc-option=-Wunused-binds
   - --ghc-option=-Wunused-matches
-upgrades: ../../artifacts/alluvren-v1-0.2.0.dar
+upgrades: ../../artifacts/alluvren-v1-0.3.0.dar

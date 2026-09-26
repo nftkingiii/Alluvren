@@ -104,6 +104,7 @@ makeBatch e policyCid policy batchId rows exceptions = do
     policyCid = Some policyCid
     policyMembers = Some (policyMemberSet policy)
     exceptions
+    sealed = None
 
 approve : Env -> FundPolicy -> ContractId RedemptionBatch -> Text -> Party -> ApprovalRole -> Script (ContractId RoleApproval)
 approve e policy batchCid batchId reviewer role = do
@@ -326,6 +327,7 @@ testLegacyPathGuards = script do
     policyCid = None
     policyMembers = None
     exceptions = None
+    sealed = None
   let target = ApprovalTarget with batchCid = legacyCid; batchId = legacyId; policyVersion = "legacy-v1"
   lf <- submit e.coo $ createCmd RoleApproval with
     governanceParty = e.gov; reviewer = e.coo; role = FundReviewer; target; expiresAt = addRelTime now (hours 1)

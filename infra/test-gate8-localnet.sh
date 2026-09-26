@@ -1,46 +1,16 @@
 #!/usr/bin/env bash
 # Gate 8 on BitSafe LocalNet: drive the real backend (backend/src) over HTTP as
-# signed-in users, the same calls the Live ledger UI makes.
-#   - Throwaway accounts with random passwords are generated here, hashed, and
-#     never printed; they are deleted at the end.
-#   - The backend (backend/src from this repo) listens on loopback port 8787
-#     with writes enabled, using Node 20+ if installed, otherwise the
-#     node:22-alpine image with host networking (Linux). The ledger token
-#     stays in a private temp file.
+# signed-in users, the same calls the Live ledger UI makes (see
+# backend-harness.sh for how the backend and throwaway accounts are run).
 # Needs infra/setup-localnet.sh to have run on this LocalNet.
 set -Eeuo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/localnet-env.sh"
-
-API=$BASE:8787
-ORIGIN=http://alluvren.gate8
-APP_DIR=$REPO_DIR/backend
-WORK=$(mktemp -d)
-chmod 700 "$WORK"
-BACKEND_PID=""
-if command -v node >/dev/null 2>&1 && [[ $(node -p 'process.versions.node.split(".")[0]') -ge 20 ]]; then
-  NODE_MODE=host
-else
-  NODE_MODE=docker
-fi
-# Runs node with APP and WORKD pointing at the backend and the private work dir.
-run_node() {
-  if [[ $NODE_MODE == host ]]; then
-    APP=$APP_DIR WORKD=$WORK node "$@"
-  else
-    docker run --rm -v "$APP_DIR:/app:ro" -v "$WORK:/work" -e APP=/app -e WORKD=/work node:22-alpine node "$@"
-  fi
-}
+. "$INFRA_DIR/backend-harness.sh"
 
 RUN=g8-$(date +%s)
 FUND_ID=$RUN
 T='#alluvren-v1:Alluvren.Redemption'
-pass() { echo "PASS: $*"; }
-cleanup() {
-  [[ -n $BACKEND_PID ]] && kill "$BACKEND_PID" >/dev/null 2>&1 || true
-  docker rm -f alluvren-gate8 >/dev/null 2>&1 || true
-  rm -rf "$WORK"
-}
-trap cleanup EXIT
+trap backend_stop EXIT
 
 # --- operator runbook (direct ledger + DecMan), used only for setup --------
 ledger_submit() {
@@ -74,7 +44,9 @@ cancel_proposal() {
     case "$party" in "$P1") port=8082 ;; "$P2") port=8081 ;; *) fail "no node mapping for $party" ;; esac
     dm_post "$port" /governance/cancel "$(jq -cn --arg p "$GOV" --arg c "$conf" '{party_id:$p,confirmation_cid:$c,governance_type:"core_domain"}')" | grep -q 'HTTP=200' || fail "cancel confirmation $conf"
   done < <(echo "$state" | jq -r '(.confirmations // [])[] | [.contract_id,.confirming_party] | @tsv')
-  dm_post 8082 /governance/cancel-proposal "$(jq -cn --arg p "$GOV" --arg c "$1" '{party_id:$p,proposal_cid:$c}')" | grep -q 'HTTP=200' || fail "cancel proposal $1"
+  # The operator proposed it (as an additional proposer), so the operator withdraws it.
+  ledger_submit withdraw "[\"$OP\"]" "$(jq -cn --arg c "$1" --arg t "$T:FinalizePolicyRedemption" \
+    '[{ExerciseCommand:{templateId:$t,contractId:$c,choice:"Archive",choiceArgument:{}}}]')" >/dev/null || fail "withdraw proposal $1"
 }
 
 say "Setup: governed FundPolicy $FUND_ID and a 40%-funded batch (operator runbook)"
@@ -96,7 +68,7 @@ for _ in $(seq 1 10); do
 done
 [[ -n $POLICY_CID ]] || fail 'FundPolicy not visible'
 DL=$(iso_in 20)
-BATCH=$(ledger_submit batch "[\"$P1\"]" "$(jq -cn --arg gov "$GOV" --arg prop "$P1" --arg op "$OP" --arg coo "$COO" --arg t "$TREAS" --arg comp "$COMP" \
+BATCH=$(ledger_submit batch "[\"$OP\"]" "$(jq -cn --arg gov "$GOV" --arg prop "$OP" --arg op "$OP" --arg coo "$COO" --arg t "$TREAS" --arg comp "$COMP" \
   --arg inv "$INV" --arg id "$RUN-b1" --arg pv "$FUND_ID@v1" --arg pol "$POLICY_CID" --arg dl "$DL" --arg tpl "$T:RedemptionBatch" '
   [{CreateCommand:{templateId:$tpl,createArguments:{governanceParty:$gov,proposer:$prop,operator:$op,fundReviewer:$coo,treasuryReviewer:$t,
     policyVersion:$pv,batchId:$id,rows:[{requestId:($id+"-r1"),investor:$inv,requestedUnits:"1000",allocatedUnits:"400"}],
@@ -104,75 +76,23 @@ BATCH=$(ledger_submit batch "[\"$P1\"]" "$(jq -cn --arg gov "$GOV" --arg prop "$
 [[ -n $BATCH ]] || fail 'batch not created'
 echo "policy=$POLICY_CID batch=$BATCH"
 
+
 # --- throwaway accounts and the real backend ------------------------------
 say 'Start the backend with throwaway accounts (passwords never printed)'
-# The operator account acts as the batch proposer (node 2's member); each
-# governance account is bound to the member hosted on its DecMan node.
-jq -cn --arg p1 "$P1" --arg m1 "$MEMBER_1" --arg m2 "$MEMBER_2" --arg t "$TREAS" --arg coo "$COO" --arg comp "$COMP" --arg inv "$INV" '
-  [{username:"operator",party:$p1,roles:["Operator"]},
+# The operator account is the batch proposer; each governance account is bound
+# to the member hosted on its DecMan node.
+backend_start "$(jq -cn --arg op "$OP" --arg m1 "$MEMBER_1" --arg m2 "$MEMBER_2" --arg t "$TREAS" --arg coo "$COO" --arg comp "$COMP" --arg inv "$INV" '
+  [{username:"operator",party:$op,roles:["Operator"]},
    {username:"treasury",party:$t,roles:["TreasuryReviewer"]},
    {username:"coo",party:$coo,roles:["FinalSignoff"]},
    {username:"compliance",party:$comp,roles:["ComplianceReviewer"]},
    {username:"member-1",party:$m1,roles:["GovernanceMember"],decmanNode:"p1"},
    {username:"member-2",party:$m2,roles:["GovernanceMember"],decmanNode:"p2"},
-   {username:"investor",party:$inv,roles:["Investor"]}]' > "$WORK/people.json"
-run_node --input-type=module -e '
-  import { readFileSync, writeFileSync } from "node:fs";
-  import { randomBytes } from "node:crypto";
-  import { join } from "node:path";
-  import { pathToFileURL } from "node:url";
-  const { hashPassword } = await import(pathToFileURL(join(process.env.APP, "src/auth.mjs")).href);
-  const work = process.env.WORKD;
-  const people = JSON.parse(readFileSync(join(work, "people.json"), "utf8"));
-  const passwords = {}; const users = [];
-  for (const p of people) {
-    const pw = randomBytes(24).toString("base64url");
-    passwords[p.username] = pw;
-    users.push({ ...p, passwordHash: await hashPassword(pw) });
-  }
-  writeFileSync(join(work, "accounts.json"), JSON.stringify({ users }), { mode: 0o600 });
-  writeFileSync(join(work, "passwords.json"), JSON.stringify(passwords), { mode: 0o600 });
-'
-umask 077
-cat > "$WORK/backend.env" <<ENV
-PORT=8787
-ALLOWED_ORIGINS=$ORIGIN
-DEC_MAN_URLS=p1=http://127.0.0.1:8081,p2=http://127.0.0.1:8082,p3=http://127.0.0.1:8083
-GOVERNANCE_PARTY_ID=$GOV
-RULES_CONTRACT_ID=$RULES
-ALLUVREN_PACKAGE_REF=#alluvren-v1
-ENVIRONMENT=LocalNet
-LEDGER_JSON_API_URL=http://127.0.0.1:2975
-LEDGER_TOKEN=$TOKEN
-WRITES_ENABLED=true
-RATE_LIMIT_PER_MINUTE=1000
-ENV
-if [[ $NODE_MODE == host ]]; then
-  (set -a; . "$WORK/backend.env"; ACCOUNTS_FILE=$WORK/accounts.json; exec node "$APP_DIR/src/server.mjs") > "$WORK/backend.log" 2>&1 &
-  BACKEND_PID=$!
-else
-  docker run -d --name alluvren-gate8 --network host -v "$APP_DIR:/app:ro" -v "$WORK:/work:ro" --env-file "$WORK/backend.env" \
-    -e ACCOUNTS_FILE=/work/accounts.json node:22-alpine node /app/src/server.mjs >/dev/null
-fi
-for _ in $(seq 1 30); do curl -fsS "$API/healthz" >/dev/null 2>&1 && break; sleep 1; done
+   {username:"investor",party:$inv,roles:["Investor"]}]')" "http://127.0.0.1:2975,http://127.0.0.1:3975"
 HEALTH=$(curl -fsS "$API/healthz")
 [[ $(echo "$HEALTH" | jq -r '.writesEnabled') == true ]] || fail "backend not healthy with writes enabled: $HEALTH"
 pass "backend healthy on loopback, writes enabled, nodes: $(echo "$HEALTH" | jq -c '[.nodes[].ok]')"
 
-# --- HTTP client as each user ----------------------------------------------
-declare -A CSRF
-login() {
-  local user=$1 body response
-  body=$(jq -cn --arg u "$user" --slurpfile pw "$WORK/passwords.json" '{username:$u,password:$pw[0][$u]}')
-  response=$(printf '%s' "$body" | curl -sS -c "$WORK/$user.jar" -H "Origin: $ORIGIN" -H 'Content-Type: application/json' -d @- "$API/api/auth/login")
-  CSRF[$user]=$(echo "$response" | jq -r '.csrfToken // empty')
-  [[ -n ${CSRF[$user]} ]] || fail "login $user failed: $(echo "$response" | jq -c '.error')"
-}
-get() { curl -sS -b "$WORK/$1.jar" -w '\n%{http_code}' "$API$2"; }
-post() { curl -sS -b "$WORK/$1.jar" -H "Origin: $ORIGIN" -H "x-alluvren-csrf: ${CSRF[$1]}" -H 'Content-Type: application/json' -w '\n%{http_code}' -d "$3" "$API$2"; }
-code() { tail -n1 <<<"$1"; }
-body() { sed '$d' <<<"$1"; }
-expect() { [[ $(code "$1") == "$2" ]] || fail "$3: expected HTTP $2, got $(code "$1") $(body "$1" | head -c 300)"; }
 
 say 'Sign in as every role'
 for u in operator treasury coo compliance member-1 member-2 investor; do login "$u"; done
@@ -190,7 +110,7 @@ pass 'batch status computed from the live policy: Compliance required because fu
 
 say 'Reviewers approve as themselves; wrong role and missing CSRF refused'
 expect "$(post treasury /api/approvals "$(jq -cn --arg b "$BATCH" '{batchCid:$b,role:"FinalSignoff"}')")" 403 'treasury approving as COO'
-NOCSRF=$(curl -sS -b "$WORK/treasury.jar" -H "Origin: $ORIGIN" -H 'Content-Type: application/json' -w '\n%{http_code}' -d "{\"batchCid\":\"$BATCH\",\"role\":\"TreasuryReviewer\"}" "$API/api/approvals")
+NOCSRF=$(curl -sS -b "$HARNESS_WORK/treasury.jar" -H "Origin: $ORIGIN" -H 'Content-Type: application/json' -w '\n%{http_code}' -d "{\"batchCid\":\"$BATCH\",\"role\":\"TreasuryReviewer\"}" "$API/api/approvals")
 expect "$NOCSRF" 403 'approval without CSRF'
 R=$(post treasury /api/approvals "$(jq -cn --arg b "$BATCH" --arg forged "$COMP" '{batchCid:$b,role:"TreasuryReviewer",actAs:[$forged],reviewer:$forged}')"); expect "$R" 200 'treasury approval'
 A_T=$(body "$R" | jq -r '.approvalCid')

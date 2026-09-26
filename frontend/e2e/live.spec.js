@@ -106,3 +106,40 @@ test("investor sees only their own records, never the batch list, and acknowledg
   await expect(page.getByRole("button", { name: "Acknowledge" })).toHaveCount(0);
   await expect(page.getByText("Acknowledged 400 units · window-17")).toBeVisible();
 });
+
+test("operator sees a sealed batch's summary and opens its allocation book", async ({ page }) => {
+  const OP = `operator::1220${"c".repeat(64)}`;
+  const distributions = [];
+  let distributed = false;
+  await page.route("**/healthz", (route) => json(route, { ok: true, environment: "LocalNet", writesEnabled: true, nodes: [] }));
+  await page.route("**/api/auth/me", (route) => json(route, { user: { username: "operator", party: OP, roles: ["Operator"] }, csrfToken: "csrf-3" }));
+  await page.route("**/api/me/records", (route) => json(route, { entitlements: [], outstanding: [], receipts: [], releases: [], approvals: [] }));
+  await page.route("**/api/workflow", (route) => json(route, {
+    threshold: 2,
+    proposals: [],
+    audit: [],
+    batchStatus: {},
+    activeContracts: {
+      configured: true,
+      roleApprovals: [],
+      redemptionBatches: [{ contractId: "batch-s", data: { batchId: "sealed-9", policyVersion: "demo-fund@v1", totalRequested: 1000, totalAllocated: 500, rows: [],
+        sealed: { commitment: "ab12".repeat(16), rowCount: 2, maxRowAllocatedUnits: 300 } } }],
+      sealedFinalizations: distributed ? [] : [{ contractId: "fin-9", data: { batchId: "sealed-8", operator: OP, totalAllocated: 400, sealed: { rowCount: 3 } } }],
+    },
+  }));
+  await page.route("**/api/sealed/distribute", (route) => {
+    distributions.push({ headers: route.request().headers(), body: route.request().postDataJSON() });
+    distributed = true;
+    return json(route, { ok: true, batchId: "sealed-8", entitlements: 3, outstanding: 1 });
+  });
+
+  await openLive(page);
+  await expect(page.getByText("Rows sealed: 2 requests, largest allocation 300 units.")).toBeVisible();
+  await expect(page.getByText("1 sealed batch is finalized and ready to distribute")).toBeVisible();
+  await page.getByRole("button", { name: "Open allocation book" }).click();
+  await expect(page.getByText("Distribution: done. The ledger accepted it.")).toBeVisible();
+  expect(distributions).toHaveLength(1);
+  expect(distributions[0].body).toEqual({ finalizationCid: "fin-9" });
+  expect(distributions[0].headers["x-alluvren-csrf"]).toBe("csrf-3");
+  await expect(page.getByRole("heading", { name: "Sealed batches to distribute" })).toHaveCount(0);
+});

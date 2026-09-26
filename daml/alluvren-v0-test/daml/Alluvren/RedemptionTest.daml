@@ -37,6 +37,7 @@ testWrongBusinessRoleRejectedThenCorrectRolesFinalize = script do
       policyCid = None
       policyMembers = None
       exceptions = None
+      sealed = None
 
   let target = ApprovalTarget with batchCid; batchId = "window-001-batch-001"; policyVersion = "policy-v1"
 

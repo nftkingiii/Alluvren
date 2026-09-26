@@ -107,6 +107,10 @@ const fundPolicy = {
   base: [{ role: "TreasuryReviewer", members: [TREAS], quorum: "1" }, { role: "FinalSignoff", members: [party("coo")], quorum: "1" }],
   conditional: [{ trigger: { tag: "FundedBelowBps", value: "5000" }, requirement: { role: "ComplianceReviewer", members: [party("compliance")], quorum: "1" } }],
 };
+const sealedFinalization = {
+  governanceParty: GOV, operator: OPERATOR, batchId: "sealed-1", policyVersion: "demo-fund@v1", totalRequested: "1000", totalAllocated: "500",
+  summary: { commitment: "c".repeat(64), rowCount: "2", maxRowAllocatedUnits: "300" }, approvers: [TREAS], finalizedAt: "2026-09-25T12:00:00Z",
+};
 const acs = {
   [GOV]: [
     { templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: { ...batch, recoveryDeadline: "2026-09-25T12:00:00Z", secret: "must-not-leak" } },
@@ -114,8 +118,13 @@ const acs = {
       governanceParty: GOV, reviewer: TREAS, role: "TreasuryReviewer",
       target: { batchCid: "batch-1", batchId: "window-17", policyVersion: "demo-fund@v1", secret: "must-not-leak" }, expiresAt: "2026-09-25T12:30:00Z",
     } },
+    { templateId: `${PKG}:Alluvren.Sealed:SealedFinalization`, contractId: "fin-1", createArgument: sealedFinalization },
   ],
-  [OPERATOR]: [{ templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: batch }],
+  [OPERATOR]: [
+    { templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: batch },
+    { templateId: `${PKG}:Alluvren.Sealed:SealedFinalization`, contractId: "fin-1", createArgument: sealedFinalization },
+    { templateId: `${PKG}:Alluvren.Sealed:AllocationBook`, contractId: "book-1", createArgument: { operator: OPERATOR, governanceParty: GOV, batchId: "sealed-1", policyVersion: "demo-fund@v1", salt: "s".repeat(32), rows: [] } },
+  ],
   [TREAS]: [
     { templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: batch },
     { templateId: `${PKG}:Alluvren.Redemption:FundPolicy`, contractId: "policy-1", createArgument: fundPolicy },
@@ -124,6 +133,7 @@ const acs = {
   [INV_A]: [
     { templateId: `${PKG}:Alluvren.Claims:ClaimEntitlement`, contractId: "entitlement-a", createArgument: { investor: INV_A, units: "400", batchId: "window-17", requestId: "r-a" } },
     { templateId: `${PKG}:Alluvren.Claims:OutstandingRedemption`, contractId: "outstanding-a", createArgument: { investor: INV_A, units: "600", batchId: "window-17", requestId: "r-a" } },
+    { templateId: `${PKG}:Alluvren.Sealed:PrivateEntitlement`, contractId: "private-a", createArgument: { operator: OPERATOR, investor: INV_A, units: "250", batchId: "sealed-1", requestId: "r-s", commitment: "c".repeat(64) } },
   ],
   [INV_B]: [
     { templateId: `${PKG}:Alluvren.Claims:ClaimEntitlement`, contractId: "entitlement-b", createArgument: { investor: INV_B, units: "150", batchId: "window-17", requestId: "r-b" } },
@@ -148,6 +158,11 @@ function ledgerMock() {
       const created = [];
       if (command.CreateCommand) created.push({ templateId: command.CreateCommand.templateId, contractId: "new-contract" });
       if (command.ExerciseCommand?.choice === "ClaimEntitlement_Acknowledge") created.push({ templateId: `${PKG}:Alluvren.Claims:ClaimReceipt`, contractId: "receipt-1" });
+      if (command.ExerciseCommand?.choice === "PrivateEntitlement_Acknowledge") created.push({ templateId: `${PKG}:Alluvren.Sealed:PrivateClaimReceipt`, contractId: "private-receipt-1" });
+      if (command.ExerciseCommand?.choice === "AllocationBook_Distribute") {
+        created.push({ templateId: `${PKG}:Alluvren.Sealed:PrivateEntitlement`, contractId: "pe-1" }, { templateId: `${PKG}:Alluvren.Sealed:PrivateEntitlement`, contractId: "pe-2" },
+          { templateId: `${PKG}:Alluvren.Sealed:PrivateOutstanding`, contractId: "po-1" });
+      }
       return res.end(JSON.stringify({ transaction: { updateId: "update-1", events: created.map((CreatedEvent) => ({ CreatedEvent })) } }));
     }
     res.statusCode = 404;
@@ -371,7 +386,8 @@ test("investors can act only on their own records", async () => {
   assert.equal((await post(staff, "/api/claims/acknowledge", { entitlementCid: "entitlement-a" })).status, 403);
 
   const records = await (await get(investorA, "/api/me/records")).json();
-  assert.deepEqual(records.entitlements.map((r) => r.contractId), ["entitlement-a"]);
+  assert.deepEqual(records.entitlements.map((r) => r.contractId), ["entitlement-a", "private-a"]);
+  assert.deepEqual(records.entitlements.map((r) => r.sealed), [false, true]);
   assert.deepEqual(records.outstanding.map((r) => r.contractId), ["outstanding-a"]);
   assert.equal(JSON.stringify(records).includes("entitlement-b"), false);
 });
@@ -429,4 +445,36 @@ test("logout ends the session", async () => {
 test("only Daml requirement text is surfaced from ledger errors", () => {
   assert.equal(damlReason("INVALID ... The requirement 'Fund approval targets the wrong batch' was not met ... token=abc"), "Fund approval targets the wrong batch");
   assert.equal(damlReason("internal stack trace"), null);
+});
+
+test("sealed batches: investors act on their private records and the operator opens the book", async () => {
+  const investorB = await login("investor-b");
+  ledgerSubmits.length = 0;
+  assert.equal((await post(investorB, "/api/claims/acknowledge", { entitlementCid: "private-a" })).status, 404);
+  assert.equal(ledgerSubmits.length, 0);
+  const investorA = await login("investor-a");
+  const ack = await post(investorA, "/api/claims/acknowledge", { entitlementCid: "private-a" });
+  assert.equal(ack.status, 200);
+  assert.equal((await ack.json()).receiptCid, "private-receipt-1");
+  assert.match(ledgerSubmits[0].commands[0].ExerciseCommand.templateId, /Alluvren\.Sealed:PrivateEntitlement$/);
+  assert.deepEqual(ledgerSubmits[0].actAs, [INV_A]);
+
+  const staff = await login("treasury");
+  assert.equal((await post(staff, "/api/sealed/distribute", { finalizationCid: "fin-1" })).status, 403);
+  const operator = await login("operator");
+  ledgerSubmits.length = 0;
+  assert.equal((await post(operator, "/api/sealed/distribute", { finalizationCid: "fin-unknown" })).status, 404);
+  const response = await post(operator, "/api/sealed/distribute", { finalizationCid: "fin-1", bookCid: "someone-elses-book" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, batchId: "sealed-1", entitlements: 2, outstanding: 1, updateId: "update-1" });
+  const exercise = ledgerSubmits[0].commands[0].ExerciseCommand;
+  assert.deepEqual(ledgerSubmits[0].actAs, [OPERATOR]);
+  assert.equal(exercise.contractId, "book-1");
+  assert.equal(exercise.choice, "AllocationBook_Distribute");
+  assert.deepEqual(exercise.choiceArgument, { finalizationCid: "fin-1" });
+
+  const workflow = await (await get(staff, "/api/workflow")).json();
+  const [pending] = workflow.activeContracts.sealedFinalizations;
+  assert.equal(pending.contractId, "fin-1");
+  assert.deepEqual(pending.data.sealed, { commitment: "c".repeat(64), rowCount: 2, maxRowAllocatedUnits: 300 });
 });

@@ -137,7 +137,8 @@ confirm_as member-1 "$PROP_A"; confirm_as member-2 "$PROP_A"
 R=$(post member-1 /api/governance/execute "$(jq -cn --arg p "$PROP_A" '{proposalCid:$p}')")
 expect "$R" 409 'execution without Compliance'
 [[ $(body "$R" | jq -r '.error') == 'Missing required approvals for role ComplianceReviewer' ]] || fail "unexpected reason: $(body "$R")"
-[[ $(body "$(get investor /api/me/records)" | jq '.entitlements | length') == 0 ]] || fail 'rejected finalization created investor records'
+# This run's batch only: the shared test investor keeps records from earlier runs.
+[[ $(body "$(get investor /api/me/records)" | jq --arg id "$RUN-b1" '[.entitlements[] | select(.batchId==$id)] | length') == 0 ]] || fail 'rejected finalization created investor records'
 pass 'BitSafe threshold reached, then the ledger rejected it: "Missing required approvals for role ComplianceReviewer"'
 cancel_proposal "$PROP_A"
 

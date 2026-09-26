@@ -199,7 +199,7 @@ Recording the demo showed two faults. First, the operator's page proposed with t
 | Buttons ignore clicks while submitting and stay disabled after the ledger accepts ("Approved", "Proposed", …); a rejected action can be retried | Browser tests: rejected then accepted approval; a double click on Propose sends one request |
 | The Live ledger refreshes every 20 seconds while visible | |
 
-Backend 25/25, frontend 6/6 and build, browser journeys 11/11. Removing any one of the six server guards makes a test fail. Local mocks only; the LocalNet gate script (`test-gate8-localnet.sh`) now asserts the approval count and the repeat refusal, but has not been re-run on LocalNet since this change.
+Backend 25/25, frontend 6/6 and build, browser journeys 11/11. Removing any one of the six server guards makes a test fail. On BitSafe LocalNet the same day: `test-gate8-localnet.sh` passed (run `g8-1790432851`). The first proposal carried exactly the 2 valid approvals, a repeat was refused with 409, the ledger rejected execution for the missing Compliance approval, and the corrected proposal carried all 3 and executed. `test-sealed-localnet.sh` passed too (run `sealed-1790432734`). The gate 8 script's check that a rejected finalization creates no investor records now looks at this run's batch only; it had counted every record of the shared test investor, including ones left by earlier runs.
 
 ## Live ledger UI rehearsal on BitSafe LocalNet (2026-09-26)
 

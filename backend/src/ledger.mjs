@@ -3,14 +3,15 @@ import { randomUUID } from "node:crypto";
 // Minimal Canton JSON Ledger API v2 client. The token stays server-side; callers
 // pass actAs explicitly and the HTTP layer only ever passes the session party.
 //
-// baseUrl may list several participants (comma-separated) that host the same
-// parties, in order of preference. Participants that report no connected
-// synchronizer are tried last: a disconnected participant still answers reads,
-// but from a stale ledger. Reads move to the next participant on any connection
-// or server failure. A submission moves on only when the failure shows the
-// command never reached the ledger: the participant was unreachable, or it
-// answered that it is not connected to a synchronizer. Rejections and timeouts
-// are never retried elsewhere, so a command cannot be applied twice.
+// baseUrl may list several participants (comma-separated), in order of
+// preference; a party may be hosted on only some of them. Participants that
+// report no connected synchronizer are tried last: a disconnected participant
+// still answers reads, but from a stale ledger. Reads move to the next
+// participant on any connection or server failure. A submission moves on only
+// when the failure shows the command never reached the ledger: the participant
+// was unreachable, answered that it is not connected to a synchronizer, or
+// refused the party (403, it is hosted elsewhere). Rejections and timeouts are
+// never retried elsewhere, so a command cannot be applied twice.
 
 const TIMEOUT_MS = 15000;
 const HEALTH_TIMEOUT_MS = 3000;
@@ -46,7 +47,10 @@ export function createLedger({ baseUrl, token, userId = "ledger-api-user" }) {
       try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = {}; }
       if (!response.ok) {
         throw Object.assign(new Error("Ledger rejected the request"), {
-          status: response.status, ledgerReason: damlReason(text), notSubmitted: NOT_SUBMITTED.test(text), serverError: response.status >= 500,
+          status: response.status, ledgerReason: damlReason(text), serverError: response.status >= 500,
+          // 403: this participant's user may not act or read for the party
+          // (it is hosted elsewhere); refused before any processing.
+          notSubmitted: NOT_SUBMITTED.test(text) || response.status === 403,
         });
       }
       return parsed;

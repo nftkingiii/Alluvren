@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PACKAGE_ID="7b10df4f60f86204fe5b920b9c2663cc214da4e9d29c86b4f171769d63c26512"
+# alluvren-v1 0.4.0 (artifacts/SHA256SUMS.txt, artifacts/V0_4_CHANGELOG.md)
+PACKAGE_ID="564cef4f541a96c6616b1ec99ecc49177ef91d0de690ae23bcd354e20f7d1315"
 
 container_state() {
   sudo docker inspect --format '{{.State.Status}}' "$1" 2>/dev/null || printf 'missing'
@@ -87,7 +88,7 @@ for port in 8081 8082 8083; do
   curl --fail --silent --show-error "http://127.0.0.1:${port}/healthz" >/dev/null
   curl --fail --silent --show-error "http://127.0.0.1:${port}/packages/vetted" \
     | grep --fixed-strings --quiet "$PACKAGE_ID"
-  printf 'DecMan %s healthy; Alluvren v1 package present\n' "$port"
+  printf 'DecMan %s healthy; alluvren-v1 0.4.0 vetted\n' "$port"
 done
 
 printf 'Validator endpoints:\n'

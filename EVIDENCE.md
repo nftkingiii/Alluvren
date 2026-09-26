@@ -185,6 +185,24 @@ LocalNet verification: see the next section. Known limits: in-memory sessions; o
 
 Leftovers: two earlier interrupted runs (`g8-1790354711`, `g8-1790354785`) left their FundPolicy, an unfinalized batch and their approvals on LocalNet (approvals expire after 30 minutes; their failed proposals were cancelled). Still unverified: per-user ledger credentials (one shared ledger user acts for all parties, so backend checks are the party boundary); the Live ledger UI against LocalNet in a browser (the run drove the same HTTP API, not the UI).
 
+## Live ledger UI rehearsal on BitSafe LocalNet (2026-09-26)
+
+`infra/demo-session.sh start` on the VM, then the real frontend on a laptop through an SSH tunnel to the backend. A Playwright script drove the demo video's 17 steps as eight signed-in roles. The steps: 40%-funded batch, Treasury and COO approve, the operator proposes, members 1 and 2 confirm, execution rejected for missing Compliance, Compliance approves, the corrected proposal executes, and the investor sees 240/360 and acknowledges. Then the sealed batch: approvals, proposal, execution, the operator opens the allocation book, and the investor sees the sealed 300-unit record. The full run passed on a clean session (`window-17`, `window-18`) in about 2.5 minutes. `demo-localnet.sh outage-node2` then passed while the session's backend stayed up.
+
+Found by the rehearsal and fixed:
+
+| Issue | Fix | Check |
+| --- | --- | --- |
+| Governance members' pages failed to load ("Configured upstream unavailable"): node 2 answers 403 for a party it doesn't host (member 1 lives on node 1), and reads didn't fail over on 403 | 403 is treated as refused before processing: reads and submissions move to the next participant | New failover test; mutation removing it is caught; members' pages load on LocalNet |
+| Members saw "Requirements are not available" for every batch (their parties can't see fund policies) | Batch status is computed from the governance party's view | Server test asserts a member sees the requirements; visible on LocalNet |
+| A rejected proposal and its corrected replacement looked identical | Proposal descriptions state the approval count ("Finalize window-17 with 3 approvals") | Server test; the rehearsal executes the right one |
+| All demo traffic comes through one tunnel address and hit the 60-requests-per-minute limit | `demo-session.sh` sets 600 per minute (the backend listens on the VM's loopback only) | Rehearsal passes |
+| The test harness's backend used the session's port | Harness moved to port 8788 | Outage demo passes alongside a session |
+| Leftover proposals, batches and investor records from earlier sessions cluttered the screen | Each session withdraws the operator's open proposals, archives open batches and books, and allocates two fresh investors | Clean session: only the two new batches and no leftover records |
+| "2 batchs need your Treasury approval" | Plural helper fixed | Visible in rehearsal |
+
+Local suites after the fixes: backend 22/22, frontend 6/6, Playwright 10/10. Session stopped (accounts deleted), VM stopped and verified `TERMINATED`.
+
 ## Fresh-LocalNet reproduction, backup hosting, sealed batches (2026-09-26)
 
 A judge's path from zero, run on the VM as the non-root account that owns the DecMan checkout (`aa13fa9`, `hackathon` branch): `reset.sh --yes`, `up.sh`, `seed.sh`, `bash infra/setup-localnet.sh` (twice), `bash infra/demo-localnet.sh --all`. Exit 0; run 04:17Z. Earlier attempts on the same day found and fixed the issues listed at the end of this section.

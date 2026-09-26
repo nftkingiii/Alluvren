@@ -456,7 +456,8 @@ async function proposeFinalize(session, body) {
       proposer: session.party,
       batchCid: batch.contractId,
       approvalCids,
-      description: `Finalize ${String(batch.argument.batchId).slice(0, 120)}`,
+      // The approval count tells a corrected proposal apart from a rejected one.
+      description: `Finalize ${String(batch.argument.batchId).slice(0, 120)} with ${approvalCids.length} approval${approvalCids.length === 1 ? "" : "s"}`,
     },
   } }]);
   const proposalCid = result.created.find((event) => templateName(event.templateId) === "FinalizePolicyRedemption")?.contractId ?? null;
@@ -524,11 +525,13 @@ async function myRecords(session) {
   };
 }
 
-// What each batch still needs, from the batch and pinned FundPolicy visible to
-// the session party. Display only; the ledger re-checks at finalization.
+// What each batch still needs, from the batches and pinned FundPolicies the
+// governance party sees (staff already read every batch through /api/workflow,
+// and governance members need this before they execute). Display only; the
+// ledger re-checks at finalization.
 async function batchStatuses(session, snapshot) {
   if (!ledger.configured) return {};
-  const contracts = await ledger.activeContracts(session.party);
+  const contracts = await ledger.activeContracts(governancePartyId);
   const policies = new Map(contracts.filter((c) => templateName(c.templateId) === "FundPolicy").map((c) => [c.contractId, parsePolicy(c.argument)]));
   const approvals = (snapshot.activeContracts?.roleApprovals ?? []).map((a) => ({
     contractId: a.contractId, reviewer: a.data?.reviewer, role: a.data?.role, batchCid: a.data?.target?.batchCid,

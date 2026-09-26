@@ -119,6 +119,7 @@ const acs = {
       target: { batchCid: "batch-1", batchId: "window-17", policyVersion: "demo-fund@v1", secret: "must-not-leak" }, expiresAt: "2026-09-25T12:30:00Z",
     } },
     { templateId: `${PKG}:Alluvren.Sealed:SealedFinalization`, contractId: "fin-1", createArgument: sealedFinalization },
+    { templateId: `${PKG}:Alluvren.Redemption:FundPolicy`, contractId: "policy-1", createArgument: fundPolicy },
   ],
   [OPERATOR]: [
     { templateId: `${PKG}:Alluvren.Redemption:RedemptionBatch`, contractId: "batch-1", createArgument: batch },
@@ -325,6 +326,10 @@ test("workflow requires a staff session; investors are refused", async () => {
     ["TreasuryReviewer", true, false], ["FinalSignoff", false, false], ["ComplianceReviewer", false, true],
   ]);
   assert.equal(status.complete, false);
+  // Governance members see the same requirements before they execute.
+  const memberView = await (await get(await login("member"), "/api/workflow")).json();
+  assert.equal(memberView.batchStatus["batch-1"].policyVisible, true);
+  assert.deepEqual(memberView.batchStatus["batch-1"].roles.map((r) => r.role), ["TreasuryReviewer", "FinalSignoff", "ComplianceReviewer"]);
   assert.equal(payload.audit[0].details.secret, undefined);
   assert.equal(JSON.stringify(payload).includes("private-created-event-blob"), false);
   assert.equal(JSON.stringify(payload).includes("must-not-leak"), false);
@@ -402,6 +407,7 @@ test("only the batch proposer can propose finalization, with exact approval sets
   const command = ledgerSubmits[0].commands[0].CreateCommand;
   assert.match(command.templateId, /FinalizePolicyRedemption$/);
   assert.deepEqual(command.createArguments.approvalCids, ["approval-t", "approval-c"]);
+  assert.equal(command.createArguments.description, "Finalize window-17 with 2 approvals");
   assert.equal(command.createArguments.proposer, OPERATOR);
 
   const staff = await login("treasury");

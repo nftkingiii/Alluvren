@@ -3,12 +3,13 @@
 # makes.
 #   - Throwaway accounts get random passwords that are hashed, never printed,
 #     and deleted with the private work directory by backend_stop.
-#   - The backend listens on loopback port 8787 with writes enabled, using
+#   - The backend listens on loopback port 8788 with writes enabled, using
 #     Node 20+ if installed, otherwise the node:22-alpine image with host
 #     networking (Linux), run as the calling user.
 # Callers must run backend_stop on exit (put it in their EXIT trap).
 
-API=$BASE:8787
+# 8788, so a recording session (demo-session.sh, port 8787) can stay up.
+API=$BASE:8788
 ORIGIN=http://alluvren.harness
 APP_DIR=$REPO_DIR/backend
 HARNESS_WORK=$(mktemp -d)
@@ -55,7 +56,7 @@ backend_start() {
     writeFileSync(join(work, "passwords.json"), JSON.stringify(passwords), { mode: 0o600 });
   '
   (umask 077; cat > "$HARNESS_WORK/backend.env" <<ENV
-PORT=8787
+PORT=8788
 ALLOWED_ORIGINS=$ORIGIN
 DEC_MAN_URLS=p1=http://127.0.0.1:8081,p2=http://127.0.0.1:8082,p3=http://127.0.0.1:8083
 GOVERNANCE_PARTY_ID=$GOV

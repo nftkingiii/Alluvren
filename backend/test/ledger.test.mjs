@@ -97,3 +97,14 @@ test("a participant that reports no connected synchronizer is used last, even th
   assert.equal((await ledger.submit("alice", [])).updateId, "backup-update");
   assert.equal(stale.calls.length, 0);
 });
+
+test("a party hosted only on the backup is read and submitted there when the primary refuses it", async () => {
+  const primary = await participant("primary", (p) => p.startsWith("/v2/state/ledger-end")
+    ? [200, { offset: 9 }]
+    : [403, { code: "NA", cause: "A security-sensitive error has been received", grpcCodeValue: 7 }]);
+  const backup = await participant("backup", ok("backup"));
+  const ledger = createLedger({ baseUrl: `${primary.url},${backup.url}`, token: "t" });
+  assert.deepEqual((await ledger.activeContracts("member")).map((c) => c.contractId), ["backup-cid"]);
+  assert.equal((await ledger.submit("member", [])).updateId, "backup-update");
+  assert.equal(primary.calls.filter((c) => c.path.startsWith("/v2/commands")).length, 1);
+});

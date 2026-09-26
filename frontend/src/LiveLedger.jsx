@@ -25,7 +25,7 @@ const roleLabel = (role) => ROLE_LABELS[role] ?? role;
 const short = (value = "") => (value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value);
 const units = (n) => (Number.isFinite(n) ? n.toLocaleString("en-US") : "—");
 const pct = (bps) => `${(bps / 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
-const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : /(ch|sh|s|x)$/.test(word) ? "es" : "s"}`;
 
 function SignIn({ onSignedIn }) {
   const [username, setUsername] = useState("");
@@ -294,7 +294,7 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                     {data?.sealed && (
                       <p className="sealed-note">
                         <LockKeyhole size={14} /> Rows sealed: {plural(data.sealed.rowCount ?? 0, "request")}, largest allocation {units(data.sealed.maxRowAllocatedUnits)} units.
-                        {" "}Governance sees totals and the commitment <code title={data.sealed.commitment ?? ""}>{short(data.sealed.commitment ?? "")}</code>, not who gets what.
+                        {" "}Governance sees totals and a commitment, not who gets what: <code title={data.sealed.commitment ?? ""}>{short(data.sealed.commitment ?? "")}</code>
                       </p>
                     )}
                     {status && status.policyVisible ? (

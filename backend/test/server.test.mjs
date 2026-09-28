@@ -419,7 +419,7 @@ test("proposals use the approvals valid now on the ledger, not the request's lis
   const command = ledgerSubmits[0].commands[0].CreateCommand;
   assert.match(command.templateId, /FinalizePolicyRedemption$/);
   assert.deepEqual(command.createArguments.approvalCids, ["approval-t"]);
-  assert.equal(command.createArguments.description, "Finalize window-17 with 1 approval");
+  assert.equal(command.createArguments.description, "Finalize window-17 under demo-fund@v1 with 1 approval");
   assert.equal(command.createArguments.proposer, OPERATOR);
 
   const staff = await login("treasury");
@@ -428,14 +428,14 @@ test("proposals use the approvals valid now on the ledger, not the request's lis
 
 test("a proposal already open with the same approvals is not submitted again", async () => {
   const open = { templateId: `${PKG}:Alluvren.Redemption:FinalizePolicyRedemption`, contractId: "proposal-open",
-    createArgument: { governanceParty: GOV, proposer: OPERATOR, batchCid: "batch-1", approvalCids: ["approval-t"], description: "Finalize window-17 with 1 approval" } };
+    createArgument: { governanceParty: GOV, proposer: OPERATOR, batchCid: "batch-1", approvalCids: ["approval-t"], description: "Finalize window-17 under demo-fund@v1 with 1 approval" } };
   acs[GOV].push(open);
   try {
     const operator = await login("operator");
     ledgerSubmits.length = 0;
     const repeat = await post(operator, "/api/proposals/finalize", { batchCid: "batch-1" });
     assert.equal(repeat.status, 409);
-    assert.deepEqual(await repeat.json(), { error: "A proposal to finalize window-17 with 1 approval is already open" });
+    assert.deepEqual(await repeat.json(), { error: "A proposal to finalize window-17 under demo-fund@v1 with 1 approval is already open" });
     assert.equal(ledgerSubmits.length, 0);
     const status = (await (await get(operator, "/api/workflow")).json()).batchStatus["batch-1"];
     assert.equal(status.currentProposed, true);

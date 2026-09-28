@@ -455,7 +455,9 @@ async function proposeFinalize(session, body) {
   const status = ledgerStatuses(await ledger.activeContracts(governancePartyId))[batch.contractId];
   const approvalCids = status ? status.roles.flatMap((r) => r.approvals.map((a) => a.approvalCid)) : [];
   if (approvalCids.length === 0) throw httpError(409, "This batch has no valid approvals yet");
-  const what = `${String(batch.argument.batchId).slice(0, 120)} with ${approvalCids.length} approval${approvalCids.length === 1 ? "" : "s"}`;
+  // The policy version names the fund whose rules apply, so every member sees
+  // them when confirming: which fund a batch belongs to is the operator's claim.
+  const what = `${String(batch.argument.batchId).slice(0, 120)} under ${String(batch.argument.policyVersion).slice(0, 60)} with ${approvalCids.length} approval${approvalCids.length === 1 ? "" : "s"}`;
   if (status.currentProposed) throw httpError(409, `A proposal to finalize ${what} is already open`);
   const result = await ledger.submit(session.party, [{ CreateCommand: {
     templateId: templateId("Redemption", "FinalizePolicyRedemption"),

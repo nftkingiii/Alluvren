@@ -54,3 +54,21 @@ LocalNet integration tests require the BitSafe Decentralization Manager LocalNet
 ## Upstream dependency
 
 The BitSafe Decentralization Manager source is maintained separately: <https://github.com/DLC-link/decentralization-manager/tree/hackathon/hackathon>. It is intentionally not vendored into this repository.
+
+## Contributions to the Decentralization Manager
+
+Building Alluvren on DecMan turned up gaps in DecMan itself, so we fixed them upstream in [DLC-link/decentralization-manager](https://github.com/DLC-link/decentralization-manager). The first three came straight out of Alluvren's integration. The rest close open DecMan issues, and each went through maintainer review before merging.
+
+| PR | What it does | Issue | Status |
+|---|---|---|---|
+| [#491](https://github.com/DLC-link/decentralization-manager/pull/491) | Return decoded contract fields from `/contracts/query` on request. Alluvren's backend needed these to read batch and approval fields. | | Merged 2026-09-30 |
+| [#490](https://github.com/DLC-link/decentralization-manager/pull/490) | Add three execution gotchas, found while building Alluvren's module, to the custom templates guide | | Merged 2026-09-30 |
+| [#493](https://github.com/DLC-link/decentralization-manager/pull/493) | Document requiring business sign-offs when a governed action executes, the pattern Alluvren uses | | Merged 2026-10-01 |
+| [#498](https://github.com/DLC-link/decentralization-manager/pull/498) | Refuse reward beneficiary lists the instrument template would reject, in the form and the backend | [#466](https://github.com/DLC-link/decentralization-manager/issues/466) | Merged 2026-10-01 |
+| [#500](https://github.com/DLC-link/decentralization-manager/pull/500) | Reset the proposal form when the proposal type changes | [#358](https://github.com/DLC-link/decentralization-manager/issues/358) | Merged 2026-10-01 |
+| [#501](https://github.com/DLC-link/decentralization-manager/pull/501) | Keep the Packages tables inside the panel with their headers in view | [#430](https://github.com/DLC-link/decentralization-manager/issues/430) | Merged 2026-10-01 |
+| [#502](https://github.com/DLC-link/decentralization-manager/pull/502) | Show the deployed governance rules on the dec party page | [#462](https://github.com/DLC-link/decentralization-manager/issues/462) | Merged 2026-10-01 |
+| [#503](https://github.com/DLC-link/decentralization-manager/pull/503) | Let operators star a decparty so it stays at the top of the list | [#406](https://github.com/DLC-link/decentralization-manager/issues/406) | Merged 2026-10-01 |
+| [#506](https://github.com/DLC-link/decentralization-manager/pull/506) | Add a mock fixture for the expected package versions (bug reported in [#505](https://github.com/DLC-link/decentralization-manager/issues/505)) | [#505](https://github.com/DLC-link/decentralization-manager/issues/505) | Open, in review |
+
+All of them: [PRs by nftkingiii](https://github.com/DLC-link/decentralization-manager/pulls?q=is%3Apr+author%3Anftkingiii).

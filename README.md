@@ -57,7 +57,7 @@ The BitSafe Decentralization Manager source is maintained separately: <https://g
 
 ## Contributions to the Decentralization Manager
 
-Building Alluvren on DecMan turned up gaps in DecMan itself, so we fixed them upstream in [DLC-link/decentralization-manager](https://github.com/DLC-link/decentralization-manager). The first three came straight out of Alluvren's integration. The rest close open DecMan issues, and each went through maintainer review before merging.
+Building Alluvren on DecMan turned up gaps in DecMan itself, so we fixed them upstream in [DLC-link/decentralization-manager](https://github.com/DLC-link/decentralization-manager). The first three came straight out of Alluvren's integration. The rest close open DecMan issues, one of them a bug we reported ourselves. All nine went through maintainer review and are merged.
 
 | PR | What it does | Issue | Status |
 |---|---|---|---|
@@ -69,6 +69,6 @@ Building Alluvren on DecMan turned up gaps in DecMan itself, so we fixed them up
 | [#501](https://github.com/DLC-link/decentralization-manager/pull/501) | Keep the Packages tables inside the panel with their headers in view | [#430](https://github.com/DLC-link/decentralization-manager/issues/430) | Merged 2026-10-01 |
 | [#502](https://github.com/DLC-link/decentralization-manager/pull/502) | Show the deployed governance rules on the dec party page | [#462](https://github.com/DLC-link/decentralization-manager/issues/462) | Merged 2026-10-01 |
 | [#503](https://github.com/DLC-link/decentralization-manager/pull/503) | Let operators star a decparty so it stays at the top of the list | [#406](https://github.com/DLC-link/decentralization-manager/issues/406) | Merged 2026-10-01 |
-| [#506](https://github.com/DLC-link/decentralization-manager/pull/506) | Add a mock fixture for the expected package versions (bug reported in [#505](https://github.com/DLC-link/decentralization-manager/issues/505)) | [#505](https://github.com/DLC-link/decentralization-manager/issues/505) | Open, in review |
+| [#506](https://github.com/DLC-link/decentralization-manager/pull/506) | Add a mock fixture for the expected package versions (bug reported in [#505](https://github.com/DLC-link/decentralization-manager/issues/505)) | [#505](https://github.com/DLC-link/decentralization-manager/issues/505) | Merged 2026-10-05 |
 
 All of them: [PRs by nftkingiii](https://github.com/DLC-link/decentralization-manager/pulls?q=is%3Apr+author%3Anftkingiii).

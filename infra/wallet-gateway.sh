@@ -55,6 +55,23 @@ fi
 cp "$INFRA_DIR/wallet-gateway.config.json" "$WALLET_GATEWAY_DIR/config.json"
 
 stop_gateway
+# The gateway reads its networks from config.json only on its first start; after
+# that its store wins. Re-apply the configured login settings (the client ID its
+# login page pre-fills) so they follow this repo's config.
+if [[ -f $WALLET_GATEWAY_DIR/store.sqlite ]]; then
+  cp "$WALLET_GATEWAY_DIR/store.sqlite" "$WALLET_GATEWAY_DIR/store.sqlite.bak"
+  (cd "$WALLET_GATEWAY_DIR" && node --input-type=module -e '
+    import { createRequire } from "node:module";
+    import { readFileSync } from "node:fs";
+    const Database = createRequire(process.cwd() + "/")("better-sqlite3");
+    const db = new Database("store.sqlite");
+    const update = db.prepare("update networks set auth = ? where id = ?");
+    for (const n of JSON.parse(readFileSync("config.json", "utf8")).bootstrap.networks) {
+      if (update.run(JSON.stringify(n.auth), n.id).changes) console.log(`login settings for ${n.id}: client ID ${n.auth.clientId}`);
+    }
+    db.close();
+  ')
+fi
 pushd "$WALLET_GATEWAY_DIR" >/dev/null
 # Detached from this script's stdin and stdout so callers that pipe its output
 # are not held open by the gateway.

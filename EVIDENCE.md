@@ -207,6 +207,8 @@ Found and fixed:
 | Sign-in hung on "Waiting for your wallet…" in most runs: after login the gateway redirects its popup to `/parties`, and a signing request sent straight after connecting lost that race | Sign-in is two clicks: Connect wallet shows which wallet connected, then Sign in with this wallet asks for the signature | Failed 3 of 3 before; all 28 gateway sign-ins in five runs after |
 | Investor A's receipts from earlier sessions matched the test's receipt check | The test checks this session's batch by name | Cycle 3 passes |
 
+One journey run made while a large Rust build was using the same VM failed at the members' sign-in (the gateway's popup came back blank); the same journey then passed on a quiet VM (`window-18`). Not diagnosed further.
+
 All runs on the GCP VM. Logins are LocalNet self-signed development tokens and the keys sit in the gateway's own store; see Still unverified.
 
 ## Proposals name the fund policy (2026-09-28)

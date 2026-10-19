@@ -56,6 +56,12 @@ function WalletSignIn({ onSignedIn }) {
       <h2 id="live-signin-title"><Wallet size={18} /> Sign in with your wallet</h2>
       <p className="live-lede">Connect a CIP-0103 wallet and sign a one-time challenge. Your wallet decides who you are; there are no passwords. Every action here is a real LocalNet ledger command.</p>
       <p className="live-lede">Investors approve their own acknowledgments in the wallet, signed with its key.</p>
+      {!account && (
+        <p className="live-hint">
+          LocalNet's gateway uses development logins: client ID <code>alluvren-</code> plus your account (for example <code>alluvren-treasury</code>), secret <code>unsafe</code>.
+          A production wallet signs you in with your own provider instead.
+        </p>
+      )}
       {error && <p className="live-error" role="alert">{error}</p>}
       {account ? (
         <>
@@ -153,6 +159,8 @@ function ReceiptMeta({ at, wallet }) {
   if (!when && !wallet) return null;
   return <span className="live-meta">{when && <> · {when}</>}{wallet && <> · <Wallet size={12} aria-hidden="true" /> signed by your wallet key</>}</span>;
 }
+
+const RECENT_RECEIPTS = 3;
 
 function focusLines({ roles, user, statuses, batches, proposals, records, sealedPending }) {
   const lines = [];
@@ -295,6 +303,19 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
   const investorAct = (action, record) => (user.actsThroughWallet
     ? actWithWallet(action, record, user.party)
     : (action === "acknowledge" ? api.acknowledge(record.contractId) : api.withdraw(record.contractId)));
+  // Newest first; receipts without a time keep their order at the end.
+  const receipts = records
+    ? [...records.receipts.map((r) => ({ ...r, kind: "Acknowledged" })), ...records.releases.map((r) => ({ ...r, kind: "Withdrew" }))]
+      .map((r, i) => ({ r, i, t: Date.parse(r.at) }))
+      .sort((a, b) => {
+        const aDated = !Number.isNaN(a.t);
+        const bDated = !Number.isNaN(b.t);
+        if (aDated && bDated && a.t !== b.t) return b.t - a.t;
+        if (aDated !== bDated) return aDated ? -1 : 1;
+        return a.i - b.i;
+      })
+      .map(({ r }) => r)
+    : [];
   const investorBatches = isInvestor && records
     ? [...new Set([...records.entitlements, ...records.outstanding].map((r) => r.batchId))]
     : [];
@@ -333,15 +354,13 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                   ))}
                 </div>
               ))}
-              {[...records.receipts, ...records.releases].length > 0 && (
+              {receipts.length > 0 && (
                 <>
                   <h3>Receipts</h3>
-                  {records.receipts.map((r) => (
-                    <div className="live-row" key={r.contractId}><span><CheckCircle2 size={14} /> Acknowledged {units(r.units)} units · {r.batchId}<ReceiptMeta at={r.at} wallet={user.actsThroughWallet} /></span></div>
+                  {receipts.slice(0, RECENT_RECEIPTS).map((r) => (
+                    <div className="live-row" key={r.contractId}><span><CheckCircle2 size={14} /> {r.kind} {units(r.units)} units · {r.batchId}<ReceiptMeta at={r.at} wallet={user.actsThroughWallet} /></span></div>
                   ))}
-                  {records.releases.map((r) => (
-                    <div className="live-row" key={r.contractId}><span><CheckCircle2 size={14} /> Withdrew {units(r.units)} units · {r.batchId}<ReceiptMeta at={r.at} wallet={user.actsThroughWallet} /></span></div>
-                  ))}
+                  {receipts.length > RECENT_RECEIPTS && <p className="live-hint">and {plural(receipts.length - RECENT_RECEIPTS, "earlier receipt")}</p>}
                 </>
               )}
             </section>

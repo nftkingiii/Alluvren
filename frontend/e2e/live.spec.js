@@ -215,7 +215,11 @@ test("an investor whose party is its wallet acknowledges in the wallet, never th
     return json(route, {
       entitlements: acknowledged ? [] : [{ contractId: "ent-9", batchId: "window-21", requestId: "r-9", units: 240 }],
       outstanding: [{ contractId: "out-9", batchId: "window-21", requestId: "r-9", units: 360, sealed: true }],
-      receipts: acknowledged ? [{ contractId: "rec-9", batchId: "window-21", requestId: "r-9", units: 240, mode: "DemoAcknowledgment", at: "2026-10-21T14:02:00Z" }] : [],
+      // Four earlier receipts from past windows, oldest first, as the ledger may return them.
+      receipts: [
+        ...[17, 18, 19, 20].map((w) => ({ contractId: `rec-${w}`, batchId: `window-${w}`, requestId: `r-${w}`, units: 100, mode: "DemoAcknowledgment", at: `2026-10-${w - 3}T10:00:00Z` })),
+        ...(acknowledged ? [{ contractId: "rec-9", batchId: "window-21", requestId: "r-9", units: 240, mode: "DemoAcknowledgment", at: "2026-10-21T14:02:00Z" }] : []),
+      ],
       releases: [],
       approvals: [],
     });
@@ -228,6 +232,11 @@ test("an investor whose party is its wallet acknowledges in the wallet, never th
   await expect(page.getByText("Acknowledgment: done. The ledger accepted it.")).toBeVisible();
   await expect(page.getByText("Acknowledged 240 units · window-21")).toBeVisible();
   await expect(page.locator(".live-row").filter({ hasText: "window-21" }).first()).toContainText("21 Oct, 14:02 UTC · signed by your wallet key");
+  // Newest first; past the third, older receipts are counted, not listed.
+  const receiptRows = page.locator(".live-row").filter({ hasText: /Acknowledged \d/ });
+  await expect(receiptRows).toHaveCount(3);
+  await expect(receiptRows.first()).toContainText("window-21");
+  await expect(page.getByText("and 2 earlier receipts")).toBeVisible();
   const [request] = await page.evaluate(() => window.__walletCalls.submitted);
   expect(request.actAs).toEqual([WALLET_INV]);
   expect(request.commands).toEqual([{ ExerciseCommand: { templateId: "#alluvren-v1:Alluvren.Claims:ClaimEntitlement", contractId: "ent-9", choice: "ClaimEntitlement_Acknowledge", choiceArgument: {} } }]);

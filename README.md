@@ -15,7 +15,8 @@ bash infra/demo-localnet.sh
 
 - `alluvren-v1` 0.4.0: governed fund policies with role quorums, BitSafe-governed finalization, investor-private redemption records, and sealed batches that governance approves without seeing per-investor rows (`artifacts/`, checksums in `artifacts/SHA256SUMS.txt`).
 - Verified on BitSafe LocalNet: threshold-bound finalization, policy governance, signed-in role-bound writes through the backend, and a hosting-node outage with recovery. Evidence and limits are in `EVIDENCE.md`.
-- The frontend has a Live ledger tab for signed-in users (LocalNet) and a clearly labelled simulated walkthrough.
+- No passwords: everyone signs in with a CIP-0103 wallet through the Canton Wallet Gateway, and an investor whose party is its wallet acknowledges with its own key (REPRODUCE.md step 5).
+- The frontend has a Live ledger tab for signed-in users (LocalNet), showing each payout's two locks (the fund's rules and BitSafe governance), and a clearly labelled simulated walkthrough.
 - No real cash or token settlement: investor receipts are demo acknowledgments; units are 1:1 with zero fees. All LocalNet nodes are run by one developer, so independent operation is not demonstrated.
 
 ## Repository map
@@ -57,7 +58,7 @@ The BitSafe Decentralization Manager source is maintained separately: <https://g
 
 ## Contributions to the Decentralization Manager
 
-Building Alluvren on DecMan turned up gaps in DecMan itself, so we fixed them upstream in [DLC-link/decentralization-manager](https://github.com/DLC-link/decentralization-manager). The first three came straight out of Alluvren's integration. The rest close open DecMan issues, one of them a bug we reported ourselves. All nine went through maintainer review and are merged.
+Building Alluvren on DecMan turned up gaps in DecMan itself, so we fixed them upstream in [DLC-link/decentralization-manager](https://github.com/DLC-link/decentralization-manager). The first three came straight out of Alluvren's integration. The rest close open DecMan issues, one of them a bug we reported ourselves, or keep DecMan's checks passing. Ten went through maintainer review and are merged; one is in review.
 
 | PR | What it does | Issue | Status |
 |---|---|---|---|
@@ -70,5 +71,7 @@ Building Alluvren on DecMan turned up gaps in DecMan itself, so we fixed them up
 | [#502](https://github.com/DLC-link/decentralization-manager/pull/502) | Show the deployed governance rules on the dec party page | [#462](https://github.com/DLC-link/decentralization-manager/issues/462) | Merged 2026-10-01 |
 | [#503](https://github.com/DLC-link/decentralization-manager/pull/503) | Let operators star a decparty so it stays at the top of the list | [#406](https://github.com/DLC-link/decentralization-manager/issues/406) | Merged 2026-10-01 |
 | [#506](https://github.com/DLC-link/decentralization-manager/pull/506) | Add a mock fixture for the expected package versions (bug reported in [#505](https://github.com/DLC-link/decentralization-manager/issues/505)) | [#505](https://github.com/DLC-link/decentralization-manager/issues/505) | Merged 2026-10-05 |
+| [#554](https://github.com/DLC-link/decentralization-manager/pull/554) | Ignore three new `zip` extraction advisories in a build-time dependency until `utoipa-swagger-ui` allows `zip` 9, so Cargo Audit and Cargo Deny pass again | | Merged 2026-10-19 |
+| [#553](https://github.com/DLC-link/decentralization-manager/pull/553) | Let minting proposals set how long their issuer credentials stay valid | [#346](https://github.com/DLC-link/decentralization-manager/issues/346) | In review |
 
 All of them: [PRs by nftkingiii](https://github.com/DLC-link/decentralization-manager/pulls?q=is%3Apr+author%3Anftkingiii).

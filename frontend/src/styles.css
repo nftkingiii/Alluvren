@@ -3607,6 +3607,8 @@ code,
 .live-signin input { padding: 11px 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--raised); color: var(--text); font: inherit; font-size: var(--text-md); }
 .live-signin input:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
 .live-signin label { font-size: var(--text-sm); font-weight: 650; }
+.live-wallet { margin: 4px 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
+.live-wallet code { color: var(--muted); }
 .live-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); flex-wrap: wrap; font-size: var(--text-md); }
 .live-row:first-of-type { border-top: 0; }
 .live-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }

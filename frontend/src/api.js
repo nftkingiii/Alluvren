@@ -29,8 +29,14 @@ async function request(path, { method = "GET", body, signal } = {}) {
   return payload;
 }
 
-export async function signIn(username, password) {
-  const result = await request("/api/auth/login", { method: "POST", body: { username, password } });
+// Wallet sign-in (see wallet.js): the backend issues a challenge for the
+// wallet, the wallet signs it, and the signed challenge becomes the session.
+export async function walletChallenge(wallet) {
+  return request("/api/auth/challenge", { method: "POST", body: { wallet } });
+}
+
+export async function walletSignIn({ wallet, publicKey, signature, message }) {
+  const result = await request("/api/auth/wallet", { method: "POST", body: { wallet, publicKey, signature, message } });
   csrfToken = result.csrfToken;
   return result.user;
 }

@@ -5,7 +5,8 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:5173",
     browserName: "chromium",
-    channel: "chrome",
+    // Google Chrome by default; PLAYWRIGHT_CHANNEL=chromium uses Playwright's bundled build.
+    channel: process.env.PLAYWRIGHT_CHANNEL || "chrome",
     headless: true,
   },
   reporter: "list",

@@ -6,22 +6,49 @@ const json = (route, body, status = 200) =>
 const TREAS = `treasury::1220${"a".repeat(64)}`;
 const INV = `investor::1220${"b".repeat(64)}`;
 
+// A scripted CIP-0103 wallet, used only when Vite runs with VITE_E2E_WALLET=1.
+// It records what it was asked to sign and submit.
+async function useScriptedWallet(page, party) {
+  await page.addInitScript((walletParty) => {
+    window.__walletCalls = { signed: [], submitted: [] };
+    window.__ALLUVREN_E2E_WALLET__ = {
+      connect: async () => ({ partyId: walletParty, publicKey: "cHVibGljLWtleS1vZi10aGUtd2FsbGV0LTMyYnl0ZXM=" }),
+      signMessage: async (message) => { window.__walletCalls.signed.push(message); return `signature-${window.__walletCalls.signed.length}`; },
+      submit: async (request) => { window.__walletCalls.submitted.push(request); return { updateId: "update-1" }; },
+      disconnect: async () => null,
+    };
+  }, party);
+}
+
+const challengeText = (wallet, host = "127.0.0.1:5173") =>
+  `Sign in to Alluvren at ${host}\nWallet: ${wallet}\nNonce: ${"a".repeat(32)}\nExpires: 2026-10-21T14:05:00.000Z`;
+
 async function openLive(page) {
   await page.goto("/");
   await page.getByRole("button", { name: "Live ledger" }).first().click();
 }
 
-test("reviewer signs in and approves with the session CSRF token; rejections show the Daml reason", async ({ page }) => {
+test("reviewer signs in with a wallet and approves with the session CSRF token; rejections show the Daml reason", async ({ page }) => {
+  const TREAS_WALLET = `alluvren-treasury::1220${"e".repeat(64)}`;
   let signedIn = false;
+  let walletAttempts = 0;
   const posts = [];
+  const walletBodies = [];
+  await useScriptedWallet(page, TREAS_WALLET);
   await page.route("**/healthz", (route) => json(route, { ok: true, environment: "LocalNet", writesEnabled: true, nodes: [] }));
   await page.route("**/api/auth/me", (route) =>
-    signedIn ? json(route, { user: { username: "treasury", party: TREAS, roles: ["TreasuryReviewer"] }, csrfToken: "csrf-1" }) : json(route, { error: "Sign in required" }, 401));
-  await page.route("**/api/auth/login", async (route) => {
-    const body = route.request().postDataJSON();
-    if (body.password !== "right-password") return json(route, { error: "Invalid username or password" }, 401);
+    signedIn ? json(route, { user: { username: "treasury", wallet: TREAS_WALLET, party: TREAS, roles: ["TreasuryReviewer"], actsThroughWallet: false }, csrfToken: "csrf-1" }) : json(route, { error: "Sign in required" }, 401));
+  await page.route("**/api/auth/challenge", (route) => {
+    expect(route.request().postDataJSON()).toEqual({ wallet: TREAS_WALLET });
+    return json(route, { message: challengeText(TREAS_WALLET) });
+  });
+  await page.route("**/api/auth/wallet", (route) => {
+    walletBodies.push(route.request().postDataJSON());
+    walletAttempts += 1;
+    // The first signature is refused, as a wrong key would be.
+    if (walletAttempts === 1) return json(route, { error: "Wallet sign-in failed: the signature, the challenge or the wallet was not accepted" }, 401);
     signedIn = true;
-    return json(route, { user: { username: "treasury", party: TREAS, roles: ["TreasuryReviewer"] }, csrfToken: "csrf-1" });
+    return json(route, { user: { username: "treasury", wallet: TREAS_WALLET, party: TREAS, roles: ["TreasuryReviewer"], actsThroughWallet: false }, csrfToken: "csrf-1" });
   });
   await page.route("**/api/me/records", (route) => json(route, { entitlements: [], outstanding: [], receipts: [], releases: [], approvals: [] }));
   await page.route("**/api/workflow", (route) => json(route, {
@@ -46,16 +73,21 @@ test("reviewer signs in and approves with the session CSRF token; rejections sho
   });
 
   await openLive(page);
-  await expect(page.getByRole("heading", { name: "Sign in to the ledger" })).toBeVisible();
-  await page.getByLabel("Username").fill("treasury");
-  await page.getByLabel("Password").fill("wrong");
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("alert")).toHaveText("Invalid username or password");
-  await expect(page.getByLabel("Password")).toHaveValue("");
+  await expect(page.getByRole("heading", { name: "Sign in with your wallet" })).toBeVisible();
+  await expect(page.getByLabel("Password")).toHaveCount(0);
+  await page.getByRole("button", { name: "Connect wallet" }).click();
+  // Connecting shows which wallet will sign; nothing is signed until the person asks.
+  await expect(page.getByText("Connected: alluvren-treasury")).toBeVisible();
+  expect(await page.evaluate(() => window.__walletCalls.signed)).toEqual([]);
+  await page.getByRole("button", { name: "Sign in with this wallet" }).click();
+  await expect(page.getByRole("alert")).toHaveText("Wallet sign-in failed: the signature, the challenge or the wallet was not accepted");
 
-  await page.getByLabel("Password").fill("right-password");
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("button", { name: "Sign in with this wallet" }).click();
   await expect(page.getByText("window-17")).toBeVisible();
+  // The wallet signed exactly the backend's challenge, and the signature went back with it.
+  const signed = await page.evaluate(() => window.__walletCalls.signed);
+  expect(signed).toEqual([challengeText(TREAS_WALLET), challengeText(TREAS_WALLET)]);
+  expect(walletBodies[1]).toEqual({ wallet: TREAS_WALLET, publicKey: "cHVibGljLWtleS1vZi10aGUtd2FsbGV0LTMyYnl0ZXM=", signature: "signature-2", message: challengeText(TREAS_WALLET) });
   await expect(page.locator("#live-header-slot")).toContainText("treasury");
   await expect(page.locator("#live-header-slot")).toContainText("LocalNet");
   await expect(page.getByText("1 batch needs your Treasury approval")).toBeVisible();
@@ -145,6 +177,55 @@ test("investor sees only their own records, never the batch list, and acknowledg
   await expect(page.getByText("Acknowledgment: done. The ledger accepted it.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Acknowledge" })).toHaveCount(0);
   await expect(page.getByText("Acknowledged 400 units · window-17")).toBeVisible();
+});
+
+test("the wallet refuses to sign a challenge for another site", async ({ page }) => {
+  const W = `alluvren-treasury::1220${"e".repeat(64)}`;
+  await useScriptedWallet(page, W);
+  await page.route("**/healthz", (route) => json(route, { ok: true, environment: "LocalNet", writesEnabled: true, nodes: [] }));
+  await page.route("**/api/auth/me", (route) => json(route, { error: "Sign in required" }, 401));
+  await page.route("**/api/auth/challenge", (route) => json(route, { message: challengeText(W, "evil.example") }));
+  let walletPosts = 0;
+  await page.route("**/api/auth/wallet", (route) => { walletPosts += 1; return json(route, { error: "no" }, 401); });
+
+  await openLive(page);
+  await page.getByRole("button", { name: "Connect wallet" }).click();
+  await page.getByRole("button", { name: "Sign in with this wallet" }).click();
+  await expect(page.getByRole("alert")).toHaveText("Unexpected sign-in challenge; nothing was signed");
+  expect(await page.evaluate(() => window.__walletCalls.signed)).toEqual([]);
+  expect(walletPosts).toBe(0);
+});
+
+test("an investor whose party is its wallet acknowledges in the wallet, never through the server", async ({ page }) => {
+  const WALLET_INV = `alluvren-investor-a::1220${"f".repeat(64)}`;
+  let acknowledged = false;
+  let serverAcks = 0;
+  await useScriptedWallet(page, WALLET_INV);
+  await page.route("**/healthz", (route) => json(route, { ok: true, environment: "LocalNet", writesEnabled: true, nodes: [] }));
+  await page.route("**/api/auth/me", (route) => json(route, { user: { username: "investor-a", wallet: WALLET_INV, party: WALLET_INV, roles: ["Investor"], actsThroughWallet: true }, csrfToken: "csrf-3" }));
+  await page.route("**/api/me/records", async (route) => {
+    acknowledged = (await page.evaluate(() => window.__walletCalls.submitted.length)) > 0;
+    return json(route, {
+      entitlements: acknowledged ? [] : [{ contractId: "ent-9", batchId: "window-21", requestId: "r-9", units: 240 }],
+      outstanding: [{ contractId: "out-9", batchId: "window-21", requestId: "r-9", units: 360, sealed: true }],
+      receipts: acknowledged ? [{ contractId: "rec-9", batchId: "window-21", requestId: "r-9", units: 240, mode: "DemoAcknowledgment" }] : [],
+      releases: [],
+      approvals: [],
+    });
+  });
+  await page.route("**/api/claims/acknowledge", (route) => { serverAcks += 1; return json(route, { error: "no" }, 409); });
+
+  await openLive(page);
+  await expect(page.getByText("Your wallet signs each one with its key.")).toBeVisible();
+  await page.getByRole("button", { name: "Acknowledge in wallet" }).click();
+  await expect(page.getByText("Acknowledgment: done. The ledger accepted it.")).toBeVisible();
+  await expect(page.getByText("Acknowledged 240 units · window-21")).toBeVisible();
+  const [request] = await page.evaluate(() => window.__walletCalls.submitted);
+  expect(request.actAs).toEqual([WALLET_INV]);
+  expect(request.commands).toEqual([{ ExerciseCommand: { templateId: "#alluvren-v1:Alluvren.Claims:ClaimEntitlement", contractId: "ent-9", choice: "ClaimEntitlement_Acknowledge", choiceArgument: {} } }]);
+  expect(serverAcks).toBe(0);
+  // A sealed record uses the sealed template's choice.
+  await expect(page.getByRole("button", { name: "Withdraw in wallet" })).toBeVisible();
 });
 
 test("operator sees a sealed batch's summary and opens its allocation book", async ({ page }) => {

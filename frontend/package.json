@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "test": "node --test src/domain.test.js",
+    "test": "node --test src/domain.test.js src/walletCommands.test.js",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@canton-network/dapp-sdk": "1.8.0",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.468.0",
     "react": "^19.2.0",

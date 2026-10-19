@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CheckCircle2, Clock3, Layers3, LockKeyhole, LogOut, RefreshCw, ShieldCheck, Wallet } from "lucide-react";
-import { api, restoreSession, signIn, signOut } from "./api.js";
+import { api, restoreSession, signOut, walletChallenge, walletSignIn } from "./api.js";
+import { actWithWallet, connectWallet, disconnectWallet, signInWithWallet } from "./wallet.js";
 import { DEMO_VIDEO_URL, REPO_URL } from "./publicDemo.js";
 
 const ROLE_LABELS = {
@@ -27,43 +28,52 @@ const units = (n) => (Number.isFinite(n) ? n.toLocaleString("en-US") : "—");
 const pct = (bps) => `${(bps / 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : /(ch|sh|s|x)$/.test(word) ? "es" : "s"}`;
 
-function SignIn({ onSignedIn }) {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+function WalletSignIn({ onSignedIn }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(null);
-  const submit = async (event) => {
-    event.preventDefault();
+  const [account, setAccount] = useState(null);
+  const step = (work) => async () => {
     if (pending) return;
     setPending(true);
     setError(null);
     try {
-      onSignedIn(await signIn(username.trim(), password));
+      await work();
     } catch (e) {
       setError(e.message);
     } finally {
-      setPassword("");
       setPending(false);
     }
   };
+  const connect = step(async () => setAccount(await connectWallet()));
+  const signIn = step(async () => onSignedIn(await signInWithWallet({ walletChallenge, walletSignIn }, account)));
+  const useAnother = async () => {
+    setAccount(null);
+    setError(null);
+    await disconnectWallet();
+  };
   return (
-    <form className="live-signin card" onSubmit={submit} aria-labelledby="live-signin-title">
-      <h2 id="live-signin-title"><LockKeyhole size={18} /> Sign in to the ledger</h2>
-      <p className="live-lede">Your account decides which party you act as. Every action here is a real LocalNet ledger command.</p>
-      <label htmlFor="live-username">Username</label>
-      <input id="live-username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required />
-      <label htmlFor="live-password">Password</label>
-      <input id="live-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+    <section className="live-signin card" aria-labelledby="live-signin-title">
+      <h2 id="live-signin-title"><Wallet size={18} /> Sign in with your wallet</h2>
+      <p className="live-lede">Connect a CIP-0103 wallet and sign a one-time challenge. Your wallet decides who you are; there are no passwords. Every action here is a real LocalNet ledger command.</p>
+      <p className="live-lede">Investors approve their own acknowledgments in the wallet, signed with its key.</p>
       {error && <p className="live-error" role="alert">{error}</p>}
-      <button className="button primary" type="submit" disabled={pending}>{pending ? "Signing in…" : "Sign in"}</button>
-    </form>
+      {account ? (
+        <>
+          <p className="live-wallet" title={account.partyId}>
+            Connected: <strong>{account.partyId.split("::")[0]}</strong> <code>{short(account.partyId.split("::")[1] ?? "")}</code>
+          </p>
+          <div className="live-actions">
+            <button className="button primary" type="button" onClick={signIn} disabled={pending}>{pending ? "Waiting for your wallet…" : "Sign in with this wallet"}</button>
+            <button className="button quiet" type="button" onClick={useAnother} disabled={pending}>Use another wallet</button>
+          </div>
+        </>
+      ) : (
+        <button className="button primary" type="button" onClick={connect} disabled={pending}>{pending ? "Waiting for your wallet…" : "Connect wallet"}</button>
+      )}
+    </section>
   );
 }
 
-// Runs its action once. A second click is ignored while it is in flight, and
-// after the ledger accepts it the button stays disabled, showing doneLabel,
-// until the data it acted on changes (callers key it by that data). A rejected
-// action can be tried again. Optional confirmation for irreversible actions.
 function Action({ label, doneLabel = "Done", onRun, disabled, tone = "", confirmText, title }) {
   const [state, setState] = useState("idle");
   const busy = useRef(false);
@@ -209,6 +219,7 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
   };
   const doSignOut = async () => {
     await signOut();
+    await disconnectWallet();
     setUser(null);
     setWorkflow(null);
     setRecords(null);
@@ -227,7 +238,7 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
   );
 
   if (user === undefined) return <>{header}<p className="live-lede">Checking your session…</p></>;
-  if (!user) return <>{header}<SignIn onSignedIn={setUser} /></>;
+  if (!user) return <>{header}<WalletSignIn onSignedIn={setUser} /></>;
 
   const batches = workflow?.activeContracts?.redemptionBatches ?? [];
   const approvals = workflow?.activeContracts?.roleApprovals ?? [];
@@ -242,6 +253,11 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
     : [];
   const lines = focusLines({ roles, user, statuses, batches, proposals, records, sealedPending });
   const policies = [...new Set(Object.values(statuses).map((s) => s.policyVersion).filter(Boolean))];
+  // An investor whose party is its own wallet signs these in the wallet; the
+  // others act through the backend.
+  const investorAct = (action, record) => (user.actsThroughWallet
+    ? actWithWallet(action, record, user.party)
+    : (action === "acknowledge" ? api.acknowledge(record.contractId) : api.withdraw(record.contractId)));
   const investorBatches = isInvestor && records
     ? [...new Set([...records.entitlements, ...records.outstanding].map((r) => r.batchId))]
     : [];
@@ -261,7 +277,7 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
           {isInvestor && records && (
             <section className="card">
               <h2><Wallet size={18} /> My redemption records</h2>
-              <p className="live-lede">Other investors can't see these. Each action is recorded once; it is a demo acknowledgment, not a payment.</p>
+              <p className="live-lede">Other investors can't see these. Each action is recorded once; it is a demo acknowledgment, not a payment.{user.actsThroughWallet && " Your wallet signs each one with its key."}</p>
               {investorBatches.length === 0 && <p className="live-lede">No open records.</p>}
               {investorBatches.map((batchId) => (
                 <div key={batchId}>
@@ -269,13 +285,13 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                   {records.entitlements.filter((r) => r.batchId === batchId).map((r) => (
                     <div className="live-row" key={r.contractId}>
                       <span>Allocated <strong className="live-units">{units(r.units)}</strong> units{r.sealed && <span className="sealed-tag" title="From a sealed batch: governance nodes never saw this row">sealed</span>}</span>
-                      <Action label="Acknowledge" doneLabel="Acknowledged" tone="primary" disabled={writesOff} onRun={run("Acknowledgment", () => api.acknowledge(r.contractId))} />
+                      <Action label={user.actsThroughWallet ? "Acknowledge in wallet" : "Acknowledge"} doneLabel="Acknowledged" tone="primary" disabled={writesOff} onRun={run("Acknowledgment", () => investorAct("acknowledge", r))} />
                     </div>
                   ))}
                   {records.outstanding.filter((r) => r.batchId === batchId).map((r) => (
                     <div className="live-row" key={r.contractId}>
                       <span>Not funded <strong className="live-units">{units(r.units)}</strong> units{r.sealed && <span className="sealed-tag" title="From a sealed batch: governance nodes never saw this row">sealed</span>}</span>
-                      <Action label="Withdraw" doneLabel="Withdrawn" disabled={writesOff} onRun={run("Withdrawal", () => api.withdraw(r.contractId))} />
+                      <Action label={user.actsThroughWallet ? "Withdraw in wallet" : "Withdraw"} doneLabel="Withdrawn" disabled={writesOff} onRun={run("Withdrawal", () => investorAct("withdraw", r))} />
                     </div>
                   ))}
                 </div>

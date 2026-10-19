@@ -4,6 +4,9 @@
 #   bash infra/demo-session.sh start   start the backend and seed a scenario
 #   bash infra/demo-session.sh stop    stop the backend and delete the demo accounts
 #
+# Needs the Wallet Gateway (bash infra/wallet-gateway.sh start): every account
+# signs in with its wallet there, and there are no passwords.
+#
 # start:
 #   - Runs Alluvren's backend on this machine's loopback port 8787 with writes
 #     enabled, using Node 20+ if installed, otherwise node:22-alpine (Linux).
@@ -12,9 +15,12 @@
 #   - Withdraws the operator's leftover proposals and archives open batches
 #     and books from earlier sessions, and allocates two fresh investors, so
 #     the recording starts from a clean screen.
-#   - Creates one account per role with a random password. The passwords are
-#     written only to $DEMO_DIR/credentials.txt (default ~/.alluvren-demo),
-#     readable by this user alone, and never printed.
+#   - Creates one account per role, each bound to a Wallet Gateway wallet
+#     (gateway user and client ID alluvren-<role>). Signing in means signing
+#     the backend's challenge with that wallet.
+#   - Investor A's ledger party is its own wallet party, so it reads and acts
+#     only through its wallet, which signs with its key. Investor B keeps a
+#     node 2 party and acts through the backend.
 #   - Seeds a governed fund policy (Northstar: Treasury and COO always,
 #     Compliance when a batch is under 50% funded), a 40%-funded batch that
 #     needs Compliance, and a sealed batch whose rows sit in the operator's
@@ -97,47 +103,40 @@ alloc_investor() {
   grant_rights 2 "$id"
   printf '%s' "$id"
 }
-INV_A=$(alloc_investor a)
+# The backend's ledger user may read the wallet investor's records for staff
+# views, but never act for it: only the wallet's key can.
+grant_read() {
+  curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$BASE:$(json_port "$1")/v2/users/ledger-api-user/rights" \
+    -d "$(jq -cn --arg p "$2" '{userId:"ledger-api-user",identityProviderId:"",rights:[{kind:{CanReadAs:{value:{party:$p}}}}]}')" >/dev/null
+}
+curl -fsS -o /dev/null "$BASE:3030/" 2>/dev/null || fail 'the Wallet Gateway is not running: bash infra/wallet-gateway.sh start'
+wallet_of() { node "$INFRA_DIR/wallet-gateway.mjs" setup "$1" || fail "could not create the $1 wallet"; }
+INV_A=$(wallet_of investor-a)
+grant_read 2 "$INV_A"
 INV_B=$(alloc_investor b)
-echo "investor-a and investor-b are new pseudonymous parties for this session"
+echo "investor-a is its own Wallet Gateway party ${INV_A:0:40}…; investor-b is a new node 2 party"
+
+say 'Wallets'
+declare -A WALLET
+for u in operator treasury coo compliance member-1 member-2 investor-b; do WALLET[$u]=$(wallet_of "$u"); done
+WALLET[investor-a]=$INV_A
+for u in operator treasury coo compliance member-1 member-2 investor-a investor-b; do printf '%-11s gateway client ID alluvren-%s\n' "$u" "$u"; done
 
 say 'Demo accounts and backend'
 stop_backend
 rm -rf "$DEMO_DIR"; mkdir -p "$DEMO_DIR"; chmod 700 "$DEMO_DIR"
 if command -v node >/dev/null 2>&1 && [[ $(node -p 'process.versions.node.split(".")[0]') -ge 20 ]]; then NODE_MODE=host; else NODE_MODE=docker; fi
-run_node() {
-  if [[ $NODE_MODE == host ]]; then
-    APP=$APP_DIR WORKD=$DEMO_DIR node "$@"
-  else
-    docker run --rm --user "$(id -u):$(id -g)" -v "$APP_DIR:/app:ro" -v "$DEMO_DIR:/work" -e APP=/app -e WORKD=/work node:22-alpine node "$@"
-  fi
-}
-jq -cn --arg op "$OP" --arg t "$TREAS" --arg coo "$COO" --arg comp "$COMP" --arg m1 "$MEMBER_1" --arg m2 "$MEMBER_2" --arg a "$INV_A" --arg b "$INV_B" '
-  [{username:"operator",party:$op,roles:["Operator"]},
+wallets_json=$(for u in "${!WALLET[@]}"; do jq -cn --arg u "$u" --arg w "${WALLET[$u]}" '{($u):$w}'; done | jq -s 'add')
+jq -cn --arg op "$OP" --arg t "$TREAS" --arg coo "$COO" --arg comp "$COMP" --arg m1 "$MEMBER_1" --arg m2 "$MEMBER_2" --arg a "$INV_A" --arg b "$INV_B" --argjson w "$wallets_json" '
+  {users: [{username:"operator",party:$op,roles:["Operator"]},
    {username:"treasury",party:$t,roles:["TreasuryReviewer"]},
    {username:"coo",party:$coo,roles:["FinalSignoff"]},
    {username:"compliance",party:$comp,roles:["ComplianceReviewer"]},
    {username:"member-1",party:$m1,roles:["GovernanceMember"],decmanNode:"p1"},
    {username:"member-2",party:$m2,roles:["GovernanceMember"],decmanNode:"p2"},
    {username:"investor-a",party:$a,roles:["Investor"]},
-   {username:"investor-b",party:$b,roles:["Investor"]}]' > "$DEMO_DIR/people.json"
-run_node --input-type=module -e '
-  import { readFileSync, writeFileSync } from "node:fs";
-  import { randomBytes } from "node:crypto";
-  import { join } from "node:path";
-  import { pathToFileURL } from "node:url";
-  const { hashPassword } = await import(pathToFileURL(join(process.env.APP, "src/auth.mjs")).href);
-  const work = process.env.WORKD;
-  const people = JSON.parse(readFileSync(join(work, "people.json"), "utf8"));
-  const users = []; const lines = [];
-  for (const p of people) {
-    const pw = randomBytes(9).toString("base64url");
-    users.push({ ...p, passwordHash: await hashPassword(pw) });
-    lines.push(`${p.username.padEnd(12)} ${pw}   ${p.roles.join(", ")}`);
-  }
-  writeFileSync(join(work, "accounts.json"), JSON.stringify({ users }), { mode: 0o600 });
-  writeFileSync(join(work, "credentials.txt"), ["Alluvren demo accounts (LocalNet only; deleted by demo-session.sh stop)", "", ...lines, ""].join("\n"), { mode: 0o600 });
-'
+   {username:"investor-b",party:$b,roles:["Investor"]}] | map(. + {wallet: $w[.username]})}' > "$DEMO_DIR/accounts.json"
+chmod 600 "$DEMO_DIR/accounts.json"
 (umask 077; cat > "$DEMO_DIR/backend.env" <<ENV
 PORT=8787
 ALLOWED_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
@@ -162,7 +161,7 @@ else
 fi
 for _ in $(seq 1 30); do curl -fsS "$BASE:8787/healthz" >/dev/null 2>&1 && break; sleep 1; done
 [[ $(curl -fsS "$BASE:8787/healthz" | jq -r '.writesEnabled') == true ]] || fail 'backend did not start with writes enabled'
-echo "backend on 127.0.0.1:8787 (writes enabled); 8 accounts; passwords in $DEMO_DIR/credentials.txt"
+echo "backend on 127.0.0.1:8787 (writes enabled); $(jq '.users | length' "$DEMO_DIR/accounts.json") wallet accounts"
 
 # --- scenario -----------------------------------------------------------------
 say 'Clean slate'
@@ -257,8 +256,8 @@ echo "$B2: 1,000 requested, 500 available (50%), sealed; commitment ${COMMITMENT
 say 'Ready to record'
 cat <<TXT
 Backend:      127.0.0.1:8787 on this machine (open a tunnel to it; see the video script)
-Accounts:     operator, treasury, coo, compliance, member-1, member-2, investor-a, investor-b
-Passwords:    $DEMO_DIR/credentials.txt
+Sign in:      Connect wallet → Wallet Gateway → client ID alluvren-<account>, secret unsafe (LocalNet only)
+Accounts:     operator, treasury, coo, compliance, member-1, member-2, investor-a (acts through its wallet), investor-b
 Batches:      $B1 (needs Compliance), $B2 (sealed); both open for 3 hours
 Approvals:    each approval is valid for 30 minutes once given
 When done:    bash infra/demo-session.sh stop

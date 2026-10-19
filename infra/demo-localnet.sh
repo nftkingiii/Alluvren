@@ -7,8 +7,11 @@
 #   outage          test-outage-localnet.sh   node 1 offline: governance continues on nodes 2 and 3
 #   outage-node2    test-outage-node2-localnet.sh  node 2 (the business node) offline: the app fails over to node 1
 #   sealed          test-sealed-localnet.sh   governance approves a batch without seeing who gets what
+#   wallet          test-wallet-localnet.sh   an investor whose only credential is a Wallet Gateway wallet
+#                                             acknowledges with the wallet's key (only when named; needs
+#                                             `bash infra/wallet-gateway.sh start`)
 #   legacy          test-gate6/7-localnet.sh  earlier two-reviewer checks (only with --all)
-# Usage: bash infra/demo-localnet.sh [--all | shared-control | app | sealed | outage | outage-node2 | legacy]
+# Usage: bash infra/demo-localnet.sh [--all | shared-control | app | sealed | outage | outage-node2 | wallet | legacy]
 set -Eeuo pipefail
 INFRA_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -28,6 +31,7 @@ for step in "$@"; do
     sealed) run 'Privacy: sealed batch' test-sealed-localnet.sh ;;
     outage) run 'Distributed hosting: node 1 outage' test-outage-localnet.sh ;;
     outage-node2) run 'Distributed hosting: node 2 (business node) outage' test-outage-node2-localnet.sh ;;
+    wallet) run 'Wallet investor: acknowledgment signed by its own key' test-wallet-localnet.sh ;;
     legacy) run 'Legacy: threshold and replay checks' test-gate6-localnet.sh
             run 'Legacy: investor-private records' test-gate7-localnet.sh ;;
     *) echo "unknown step: $step" >&2; exit 2 ;;

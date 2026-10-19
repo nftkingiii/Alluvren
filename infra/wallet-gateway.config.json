@@ -1,0 +1,81 @@
+{
+  "kernel": {
+    "id": "alluvren-localnet",
+    "clientType": "remote"
+  },
+  "logging": {
+    "level": "info",
+    "format": "pretty"
+  },
+  "server": {
+    "port": 3030,
+    "dappPath": "/api/v0/dapp",
+    "userPath": "/api/v0/user",
+    "allowedOrigins": [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173"
+    ],
+    "requestSizeLimit": "5mb",
+    "requestRateLimit": 10000,
+    "trustProxy": false,
+    "admin": "sub",
+    "signingWorker": {
+      "pollInterval": 5000
+    }
+  },
+  "signingStore": {
+    "connection": {
+      "type": "sqlite",
+      "database": "signing_store.sqlite"
+    }
+  },
+  "store": {
+    "connection": {
+      "type": "sqlite",
+      "database": "store.sqlite"
+    }
+  },
+  "bootstrap": {
+    "idps": [
+      {
+        "id": "idp-localnet",
+        "type": "self_signed",
+        "issuer": "self-signed"
+      }
+    ],
+    "networks": [
+      {
+        "id": "canton:localnet",
+        "name": "BitSafe LocalNet (node 2, app-user)",
+        "description": "Alluvren's investors' host participant on the DecMan hackathon LocalNet. Development tokens only.",
+        "identityProviderId": "idp-localnet",
+        "auth": {
+          "method": "self_signed",
+          "issuer": "self-signed",
+          "audience": "https://canton.network.global",
+          "scope": "openid daml_ledger_api offline_access",
+          "clientId": "alluvren-investor-a",
+          "clientSecret": "unsafe"
+        },
+        "adminAuth": {
+          "method": "self_signed",
+          "issuer": "self-signed",
+          "audience": "https://canton.network.global",
+          "scope": "daml_ledger_api",
+          "clientId": "ledger-api-user",
+          "clientSecret": "unsafe"
+        },
+        "ledgerApi": {
+          "baseUrl": "http://127.0.0.1:2975"
+        }
+      }
+    ]
+  },
+  "hashingScheme": {
+    "version": "HASHING_SCHEME_VERSION_V3"
+  },
+  "signingProviders": {
+    "walletKernel": {},
+    "participant": {}
+  }
+}

@@ -119,13 +119,14 @@ test("operator's double click proposes once, with the approvals the server count
   await page.route("**/api/auth/me", (route) => json(route, { user: { username: "operator", party: OP, roles: ["Operator"] }, csrfToken: "csrf-4" }));
   await page.route("**/api/me/records", (route) => json(route, { entitlements: [], outstanding: [], receipts: [], releases: [], approvals: [] }));
   await page.route("**/api/workflow", (route) => json(route, {
-    threshold: 2, proposals: [], audit: [],
+    threshold: 2, audit: [],
+    proposals: proposed ? [{ proposalCid: "prop-1", label: "FinalizePolicyRedemption", description: "Finalize window-19 with 3 approvals", confirmationCount: 1, confirmations: [], canExecute: false }] : [],
     activeContracts: { configured: true, roleApprovals: [], sealedFinalizations: [],
       redemptionBatches: [{ contractId: "batch-2", data: { batchId: "window-19", policyVersion: "demo-fund@v1", totalRequested: 1000, totalAllocated: 400, rows: [] } }] },
     batchStatus: { "batch-2": {
       batchCid: "batch-2", kind: "policy", policyVisible: true, policyVersion: "demo-fund@v1", fundedBps: 4000, fundingThresholdBps: 5000, complete: true,
       roles: [role("TreasuryReviewer", "a-t"), role("FinalSignoff", "a-f"), role("ComplianceReviewer", "a-c")],
-      openProposals: proposed ? 1 : 0, currentProposed: proposed,
+      openProposals: proposed ? 1 : 0, currentProposed: proposed, currentProposalCid: proposed ? "prop-1" : null,
     } },
   }));
   await page.route("**/api/proposals/finalize", async (route) => {
@@ -138,11 +139,17 @@ test("operator's double click proposes once, with the approvals the server count
   await openLive(page);
   // Move off the navigation, which expands over the content while hovered.
   await page.mouse.move(900, 400);
+  // Two locks: the fund's rules are met, governance hasn't started.
+  const locks = page.getByRole("group", { name: "Locks on this payout" });
+  await expect(locks).toContainText("Fund rules");
+  await expect(locks).toContainText("All 3 roles approved");
+  await expect(locks).toContainText("Not proposed yet · needs 2 members");
   await page.getByRole("button", { name: "Propose with 3 approvals" }).dblclick();
   await expect(page.getByText("Finalization proposal with 3 approvals: done. The ledger accepted it.")).toBeVisible();
   expect(proposals).toEqual([{ batchCid: "batch-2" }]);
   await expect(page.getByRole("button", { name: "Proposed" })).toBeDisabled();
   await expect(page.getByText("A proposal with these 3 approvals is open.")).toBeVisible();
+  await expect(locks).toContainText("1 of 2 members confirmed");
 });
 
 test("investor sees only their own records, never the batch list, and acknowledges once", async ({ page }) => {
@@ -208,7 +215,7 @@ test("an investor whose party is its wallet acknowledges in the wallet, never th
     return json(route, {
       entitlements: acknowledged ? [] : [{ contractId: "ent-9", batchId: "window-21", requestId: "r-9", units: 240 }],
       outstanding: [{ contractId: "out-9", batchId: "window-21", requestId: "r-9", units: 360, sealed: true }],
-      receipts: acknowledged ? [{ contractId: "rec-9", batchId: "window-21", requestId: "r-9", units: 240, mode: "DemoAcknowledgment" }] : [],
+      receipts: acknowledged ? [{ contractId: "rec-9", batchId: "window-21", requestId: "r-9", units: 240, mode: "DemoAcknowledgment", at: "2026-10-21T14:02:00Z" }] : [],
       releases: [],
       approvals: [],
     });
@@ -220,6 +227,7 @@ test("an investor whose party is its wallet acknowledges in the wallet, never th
   await page.getByRole("button", { name: "Acknowledge in wallet" }).click();
   await expect(page.getByText("Acknowledgment: done. The ledger accepted it.")).toBeVisible();
   await expect(page.getByText("Acknowledged 240 units · window-21")).toBeVisible();
+  await expect(page.locator(".live-row").filter({ hasText: "window-21" }).first()).toContainText("21 Oct, 14:02 UTC · signed by your wallet key");
   const [request] = await page.evaluate(() => window.__walletCalls.submitted);
   expect(request.actAs).toEqual([WALLET_INV]);
   expect(request.commands).toEqual([{ ExerciseCommand: { templateId: "#alluvren-v1:Alluvren.Claims:ClaimEntitlement", contractId: "ent-9", choice: "ClaimEntitlement_Acknowledge", choiceArgument: {} } }]);

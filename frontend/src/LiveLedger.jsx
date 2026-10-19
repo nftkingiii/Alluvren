@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CheckCircle2, Clock3, Layers3, LockKeyhole, LogOut, RefreshCw, ShieldCheck, Wallet } from "lucide-react";
+import { CheckCircle2, Clock3, Layers3, LockKeyhole, LockKeyholeOpen, LogOut, RefreshCw, ShieldCheck, Wallet } from "lucide-react";
 import { api, restoreSession, signOut, walletChallenge, walletSignIn } from "./api.js";
 import { actWithWallet, connectWallet, disconnectWallet, signInWithWallet } from "./wallet.js";
 import { DEMO_VIDEO_URL, REPO_URL } from "./publicDemo.js";
@@ -115,6 +115,43 @@ function Funding({ status, data }) {
       </div>
     </div>
   );
+}
+
+// The two locks on every payout: the fund's own rules (every required role has
+// approved) and BitSafe governance (enough members confirmed from their own
+// nodes). The ledger executes only when both are open.
+function TwoLocks({ status, proposal, threshold }) {
+  if (!status?.policyVisible) return null;
+  const missing = status.roles.filter((r) => !r.met).map((r) => roleLabel(r.role));
+  const met = status.roles.length - missing.length;
+  const confirmations = proposal?.confirmationCount ?? 0;
+  const governanceOpen = Boolean(proposal?.canExecute);
+  const lock = (open, title, detail) => (
+    <div className={`lock ${open ? "open" : ""}`}>
+      {open ? <LockKeyholeOpen size={16} aria-hidden="true" /> : <LockKeyhole size={16} aria-hidden="true" />}
+      <span><strong>{title}</strong><small>{detail}</small></span>
+    </div>
+  );
+  return (
+    <div className="two-locks" role="group" aria-label="Locks on this payout">
+      {lock(status.complete, "Fund rules",
+        status.complete ? `All ${plural(status.roles.length, "role")} approved` : `${met} of ${status.roles.length} roles · waiting on ${missing.join(", ")}`)}
+      <span className="lock-join" aria-hidden="true">+</span>
+      {lock(governanceOpen, "BitSafe governance",
+        !status.currentProposed ? `Not proposed yet · needs ${threshold ?? "a threshold of"} members`
+          : `${confirmations} of ${threshold ?? "?"} members confirmed${governanceOpen ? " · ready to execute" : ""}`)}
+    </div>
+  );
+}
+
+// When the ledger recorded a receipt, and, for a wallet investor, that its own
+// key signed it (the server cannot act for that party).
+function ReceiptMeta({ at, wallet }) {
+  const when = at && !Number.isNaN(Date.parse(at))
+    ? new Date(at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) + " UTC"
+    : null;
+  if (!when && !wallet) return null;
+  return <span className="live-meta">{when && <> · {when}</>}{wallet && <> · <Wallet size={12} aria-hidden="true" /> signed by your wallet key</>}</span>;
 }
 
 function focusLines({ roles, user, statuses, batches, proposals, records, sealedPending }) {
@@ -300,10 +337,10 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                 <>
                   <h3>Receipts</h3>
                   {records.receipts.map((r) => (
-                    <div className="live-row" key={r.contractId}><span><CheckCircle2 size={14} /> Acknowledged {units(r.units)} units · {r.batchId}</span></div>
+                    <div className="live-row" key={r.contractId}><span><CheckCircle2 size={14} /> Acknowledged {units(r.units)} units · {r.batchId}<ReceiptMeta at={r.at} wallet={user.actsThroughWallet} /></span></div>
                   ))}
                   {records.releases.map((r) => (
-                    <div className="live-row" key={r.contractId}><span><CheckCircle2 size={14} /> Withdrew {units(r.units)} units · {r.batchId}</span></div>
+                    <div className="live-row" key={r.contractId}><span><CheckCircle2 size={14} /> Withdrew {units(r.units)} units · {r.batchId}<ReceiptMeta at={r.at} wallet={user.actsThroughWallet} /></span></div>
                   ))}
                 </>
               )}
@@ -325,6 +362,8 @@ export function LiveLedger({ notify, headerSlotId = "live-header-slot" }) {
                       <span className="live-meta"><span className="nowrap">{data?.policyVersion}</span>{status?.kind === "legacy" ? " · two-reviewer rule" : ""}</span>
                     </div>
                     <Funding status={status} data={data} />
+                    <TwoLocks status={status} threshold={workflow?.threshold}
+                      proposal={(workflow?.proposals ?? []).find((p) => status?.currentProposalCid && p.proposalCid === status.currentProposalCid)} />
                     {data?.sealed && (
                       <p className="sealed-note">
                         <LockKeyhole size={14} /> Rows sealed: {plural(data.sealed.rowCount ?? 0, "request")}, largest allocation {units(data.sealed.maxRowAllocatedUnits)} units.

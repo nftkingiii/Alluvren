@@ -197,6 +197,7 @@ Judges asked for a CIP-0103 wallet connection in place of manual verification. P
 | The whole demo runs through the real gateway in a browser | `frontend/e2e/wallet-gateway.spec.js` on a fresh `demo-session.sh`: treasury, COO and compliance each sign in through the gateway's login and Sign pages and approve the 40% batch; the operator proposes; members 1 and 2 confirm and execute; investor A acknowledges on the gateway's Approve page and sees `Acknowledged 240 units` | 6/6 on two fresh sessions (`window-13`, `window-15`); a third (`window-14`) passed every step but the receipt check, fixed below |
 | Existing demonstrations still pass with wallet sign-in | `demo-localnet.sh` (five demonstrations) with wallet-key accounts | 34 PASS |
 | The scripted test wallet never ships | Production build searched for the test hook | 0 files |
+| Each batch shows its two locks: the fund's rules (roles approved) and BitSafe governance (members confirmed of the threshold); a wallet investor's receipts show when they were recorded and that its key signed them | Backend test pairs a batch with its open proposal; browser tests check both locks before and after proposing and the receipt line; the gateway journey checks the locks on LocalNet (`window-16`) | PASS |
 
 Found and fixed:
 

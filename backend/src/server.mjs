@@ -560,7 +560,7 @@ function ledgerStatuses(contracts, now = Date.now()) {
     contractId: c.contractId, reviewer: c.argument.reviewer, role: c.argument.role, batchCid: c.argument.target?.batchCid,
   }));
   const proposals = of("FinalizePolicyRedemption").map((c) => ({
-    batchCid: c.argument.batchCid, approvalCids: Array.isArray(c.argument.approvalCids) ? c.argument.approvalCids : [],
+    proposalCid: c.contractId, batchCid: c.argument.batchCid, approvalCids: Array.isArray(c.argument.approvalCids) ? c.argument.approvalCids : [],
   }));
   const out = {};
   for (const c of of("RedemptionBatch")) {
@@ -568,11 +568,13 @@ function ledgerStatuses(contracts, now = Date.now()) {
     const status = batchStatus({ batchCid: c.contractId, batch, policy: batch.policyCid ? policies.get(batch.policyCid) ?? null : null, approvals });
     const current = status.roles.flatMap((r) => r.approvals.map((a) => a.approvalCid));
     const open = proposals.filter((p) => p.batchCid === c.contractId);
+    // An open proposal already carries exactly the approvals valid now.
+    const currentProposal = current.length > 0 ? open.find((p) => sameSet(p.approvalCids, current)) : undefined;
     out[c.contractId] = {
       ...status,
       openProposals: open.length,
-      // An open proposal already carries exactly the approvals valid now.
-      currentProposed: current.length > 0 && open.some((p) => sameSet(p.approvalCids, current)),
+      currentProposed: Boolean(currentProposal),
+      currentProposalCid: currentProposal?.proposalCid ?? null,
     };
   }
   return out;

@@ -81,8 +81,12 @@ for (const reviewer of ["treasury", "coo", "compliance"]) {
 test("the operator proposes the batch with all three approvals", async ({ browser }) => {
   const { page, context } = await signInThroughGateway(browser, "operator");
   const batch = fortyPercent(page);
+  const locks = batch.getByRole("group", { name: "Locks on this payout" });
+  await expect(locks).toContainText("All 3 roles approved");
+  await expect(locks).toContainText("Not proposed yet");
   await batch.getByRole("button", { name: "Propose with 3 approvals" }).click();
   await expect(batch.getByRole("button", { name: "Proposed" })).toBeVisible({ timeout: 45_000 });
+  await expect(locks).toContainText("0 of 2 members confirmed");
   await context.close();
 });
 

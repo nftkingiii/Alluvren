@@ -375,6 +375,7 @@ test("workflow requires a staff session; investors are refused", async () => {
   assert.deepEqual(status.roles.flatMap((r) => r.approvals.map((a) => a.approvalCid)), ["approval-t"]);
   assert.equal(status.complete, false);
   assert.equal(status.currentProposed, false);
+  assert.equal(status.currentProposalCid, null);
   // Governance members see the same requirements before they execute.
   const memberView = await (await get(await login("member"), "/api/workflow")).json();
   assert.equal(memberView.batchStatus["batch-1"].policyVisible, true);
@@ -477,6 +478,8 @@ test("a proposal already open with the same approvals is not submitted again", a
     assert.equal(ledgerSubmits.length, 0);
     const status = (await (await get(operator, "/api/workflow")).json()).batchStatus["batch-1"];
     assert.equal(status.currentProposed, true);
+    // Pages pair the batch with its governance proposal (and its confirmations) by this ID.
+    assert.equal(status.currentProposalCid, "proposal-open");
     assert.equal(status.openProposals, 1);
   } finally {
     acs[GOV].splice(acs[GOV].indexOf(open), 1);

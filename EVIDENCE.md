@@ -1,6 +1,6 @@
 # Alluvren Evidence Ledger
 
-Updated: 2026-09-25
+Updated: 2026-10-19
 
 This file separates verified local artifacts from sponsor/runtime evidence. Historical execution evidence is timestamped so it is not mistaken for a transaction submitted during the latest recovery session.
 
@@ -185,6 +185,29 @@ LocalNet verification: see the next section. Known limits: in-memory sessions; o
 
 Leftovers: two earlier interrupted runs (`g8-1790354711`, `g8-1790354785`) left their FundPolicy, an unfinalized batch and their approvals on LocalNet (approvals expire after 30 minutes; their failed proposals were cancelled). Still unverified: per-user ledger credentials (one shared ledger user acts for all parties, so backend checks are the party boundary); the Live ledger UI against LocalNet in a browser (the run drove the same HTTP API, not the UI).
 
+## Wallet sign-in through the Canton Wallet Gateway on BitSafe LocalNet (2026-10-19)
+
+Judges asked for a CIP-0103 wallet connection in place of manual verification. Passwords are gone: every account is bound to a wallet party and signs in by signing a one-time challenge with that wallet. The Canton Wallet Gateway 1.12.0 runs next to LocalNet on the VM (`infra/wallet-gateway.sh`), talks to node 2's JSON Ledger API, and holds each wallet's Ed25519 key (`wallet-kernel` provider). The frontend connects through `@canton-network/dapp-sdk` 1.8.0.
+
+| Claim | Check | Result |
+| --- | --- | --- |
+| The backend accepts only a signature by the key that owns the wallet over its own fresh challenge | Backend tests: session issued and replay refused; wrong key, forged signature, other text, unbound or malformed wallet, missing origin, and the old password route all refused; throttle after 6 attempts | 27/27 |
+| The wallet party is the key: its namespace is the SHA-256 fingerprint of the Ed25519 public key | Backend check on every sign-in; verified against a gateway-created wallet | PASS |
+| An investor whose party is its wallet acknowledges with its own key, never through the server | `test-wallet-localnet.sh`: governed payout to a gateway-only investor; the acknowledgment's `signedBy` is the wallet's fingerprint; receipt appears; a repeat is refused. The backend refuses to submit as such an account (409) | 6 PASS |
+| The whole demo runs through the real gateway in a browser | `frontend/e2e/wallet-gateway.spec.js` on a fresh `demo-session.sh`: treasury, COO and compliance each sign in through the gateway's login and Sign pages and approve the 40% batch; the operator proposes; members 1 and 2 confirm and execute; investor A acknowledges on the gateway's Approve page and sees `Acknowledged 240 units` | 6/6 on two fresh sessions (`window-13`, `window-15`); a third (`window-14`) passed every step but the receipt check, fixed below |
+| Existing demonstrations still pass with wallet sign-in | `demo-localnet.sh` (five demonstrations) with wallet-key accounts | 34 PASS |
+| The scripted test wallet never ships | Production build searched for the test hook | 0 files |
+
+Found and fixed:
+
+| Issue | Fix | Check |
+| --- | --- | --- |
+| The page was blank: the SDK imports WalletConnect, an optional dependency Rollup left unresolved | Vite aliases it to a stub that fails loudly if ever used | Page renders; build passes |
+| Sign-in hung on "Waiting for your wallet…" in most runs: after login the gateway redirects its popup to `/parties`, and a signing request sent straight after connecting lost that race | Sign-in is two clicks: Connect wallet shows which wallet connected, then Sign in with this wallet asks for the signature | Failed 3 of 3 before; all 28 gateway sign-ins in five runs after |
+| Investor A's receipts from earlier sessions matched the test's receipt check | The test checks this session's batch by name | Cycle 3 passes |
+
+All runs on the GCP VM. Logins are LocalNet self-signed development tokens and the keys sit in the gateway's own store; see Still unverified.
+
 ## Proposals name the fund policy (2026-09-28)
 
 A DecMan maintainer's review of our sign-off docs pattern pointed out that a proposer must not be able to choose the policy. Alluvren's ledger check already requires the pinned policy to belong to the batch's governance party and operator, to match the batch's version label and to still be in force. What it cannot check is which fund a batch belongs to: that is the operator's claim, so an operator running two funds under one party could pin the other fund's policy (see DECENTRALIZATION.md, Known limits). Every finalization proposal now names the policy version, so members see which fund's rules they are confirming.
@@ -311,6 +334,7 @@ Not shown: two hosting participants offline at once (node 3's participant stayed
 
 - A reproduction by someone other than the developer, and on macOS or with host Node.
 - Two hosting participants offline at the same time (the SV participant was not disconnected because it also runs LocalNet's Super Validator).
+- Wallet sign-in with a production identity provider and custody: on LocalNet the gateway logs users in with self-signed development tokens and keeps each wallet's key in its own store. Wallets other than the Canton Wallet Gateway were not tried.
 - Sealed batches rely on `DA.Crypto.Text.sha256`, an alpha Daml feature; it compiled for LF 2.2 and ran on this LocalNet, but its long-term stability is Daml's to decide.
 
 - Alluvren DAR distribution to the BitSafe LocalNet participants is verified. Distribution to any future Gold or external participant remains unverified.

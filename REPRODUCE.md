@@ -48,6 +48,22 @@ Every ID is discovered from your running LocalNet. Nothing is tied to our machin
 
    To run one at a time: `bash Alluvren/infra/demo-localnet.sh shared-control` (or `app`, `sealed`, `outage`, `outage-node2`). Add `--all` to include the earlier two-reviewer checks.
 
+5. Optional: sign in with a CIP-0103 wallet. Alluvren has no passwords; every account signs in with a wallet on the Canton Wallet Gateway (pinned at 1.12.0, needs Node 20+), which runs next to LocalNet on `127.0.0.1:3030`:
+
+   ```bash
+   bash Alluvren/infra/wallet-gateway.sh start
+   bash Alluvren/infra/demo-localnet.sh wallet
+   ```
+
+   The `wallet` demonstration gives an investor nothing but a gateway wallet, runs a governed payout to it, and has the wallet acknowledge its record; the acknowledgment is signed by the wallet's own Ed25519 key. To click through it yourself, start a demo session and the frontend, open `http://127.0.0.1:5173`, go to Live ledger, and Connect wallet. In the gateway's login page pick `BitSafe LocalNet (node 2, app-user)`, enter client ID `alluvren-<account>` (for example `alluvren-treasury` or `alluvren-investor-a`) and the LocalNet development secret `unsafe`, then Sign in with this wallet and sign the challenge the gateway shows:
+
+   ```bash
+   bash Alluvren/infra/demo-session.sh start
+   (cd Alluvren/frontend && npm ci && npx vite --host 127.0.0.1)
+   ```
+
+   `bash Alluvren/infra/demo-session.sh stop` and `bash Alluvren/infra/wallet-gateway.sh stop` end them. The gateway keeps its wallets in `~/.alluvren-wallet-gateway`.
+
 If the DecMan checkout is not next to Alluvren, set `DECMAN_DIR=/path/to/decentralization-manager` for steps 3 and 4. The scripts read the kit's public LocalNet development token from it.
 
 ## What each demonstration shows
@@ -55,10 +71,11 @@ If the DecMan checkout is not next to Alluvren, set `DECMAN_DIR=/path/to/decentr
 | Step | Script | What you should see |
 | --- | --- | --- |
 | `shared-control` | `infra/test-policy-localnet.sh` | Creating the fund policy with one member confirmation is rejected; with two it executes. A 40%-funded batch reaches the member threshold but the ledger rejects it with `Missing required approvals for role ComplianceReviewer`; after Compliance approves, it executes and the investor receives private records (400 allocated, 600 outstanding). A governed policy update then blocks a batch still pinned to the old policy version. Takes about 5 minutes because it waits out a batch deadline during cleanup. |
-| `app` | `infra/test-gate8-localnet.sh` | Alluvren's backend runs on `127.0.0.1:8787` with throwaway accounts (random passwords, never printed, deleted at the end). Signed-in reviewers approve as themselves; wrong roles, missing CSRF tokens and forged parties are refused; the operator proposes; two members confirm from their own nodes; execution is refused until Compliance has approved; the investor sees only their own records and acknowledges once. |
+| `app` | `infra/test-gate8-localnet.sh` | Alluvren's backend runs on `127.0.0.1:8788` with throwaway accounts, each bound to its own Ed25519 wallet key (never printed, deleted at the end). Everyone signs in by signing the backend's challenge; a key that does not own the wallet is refused. Signed-in reviewers approve as themselves; wrong roles, missing CSRF tokens and forged parties are refused; the operator proposes; two members confirm from their own nodes; execution is refused until Compliance has approved; the investor sees only their own records and acknowledges once. |
 | `sealed` | `infra/test-sealed-localnet.sh` | The operator keeps a batch's per-investor rows in a private book and proposes a sealed batch carrying only totals and a salted SHA-256 commitment. Reviewers, the operator and two members approve and execute it through the backend. Node 3, which hosts only the governance party, then holds the finalization and nothing naming an investor or an amount. A book that doesn't match the commitment is rejected; the real one issues each investor a private record that only they and the operator can see. |
 | `outage` | `infra/test-outage-localnet.sh` | Node 1's participant is disconnected from the synchronizer and its DecMan stopped. A governed policy and a payout still execute on nodes 2 and 3, and node 1's ledger stops advancing. With node 3's DecMan also stopped, a payout gets one confirmation and cannot execute. Node 1 reconnects, catches up on what it missed, confirms the waiting payout and executes it. The script always brings the nodes back, even if it fails. |
 | `outage-node2` | `infra/test-outage-node2-localnet.sh` | Node 2, which normally hosts the operator, reviewers and investors, is taken offline and refuses new commands. The operator creates a governed policy and a batch through node 1; Alluvren's backend, configured with node 2 then node 1, switches to node 1 on its own; reviewers approve, the operator proposes, members 1 and 3 confirm and execute, and the investor acknowledges and withdraws. Node 2 reconnects and catches up. |
+| `wallet` | `infra/test-wallet-localnet.sh` | Needs the Wallet Gateway (step 5). An investor party is created by the gateway with its own key, so its party ID carries that key's fingerprint. Staff approve, propose, confirm and execute a payout to it through the backend. The investor reads its record through the gateway and acknowledges it; the transaction is signed by the wallet's key and executes, the receipt appears, and a second acknowledgment is refused. |
 
 ## Nodes, thresholds and operators
 

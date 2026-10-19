@@ -73,7 +73,7 @@ for p in "$OP" "$TREAS" "$COO" "$COMP" "$INV"; do
   hosted_on 2 "$p" && hosted_on 1 "$p" || fail "$p is not hosted on both node 2 and node 1; run infra/setup-localnet.sh on a fresh LocalNet"
 done
 [[ $(node2_connected) -ge 1 ]] || fail 'node 2 participant not connected at start'
-say 'Start the backend with node 2 first and node 1 as backup (passwords never printed)'
+say 'Start the backend with node 2 first and node 1 as backup (wallet keys never printed)'
 backend_start "$(jq -cn --arg op "$OP" --arg m1 "$MEMBER_1" --arg m3 "$MEMBER_3" --arg t "$TREAS" --arg coo "$COO" --arg comp "$COMP" --arg inv "$INV" '
   [{username:"operator",party:$op,roles:["Operator"]},
    {username:"treasury",party:$t,roles:["TreasuryReviewer"]},

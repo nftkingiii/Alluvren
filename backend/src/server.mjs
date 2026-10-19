@@ -1,7 +1,7 @@
 import http from "node:http";
 import { URL } from "node:url";
 import { timingSafeEqual } from "node:crypto";
-import { APPROVAL_ROLES, createAuth, hasRole, isStaff, loadAccounts, publicUser } from "./auth.mjs";
+import { APPROVAL_ROLES, actsThroughWallet, createAuth, hasRole, isStaff, loadAccounts, publicUser } from "./auth.mjs";
 import { createLedger, damlReason, templateName } from "./ledger.mjs";
 import { batchStatus, parseBatch, parsePolicy } from "./policy.mjs";
 
@@ -406,6 +406,9 @@ const INVESTOR_ACTIONS = {
 async function investorAction(session, body, action) {
   requireWrites();
   requireRole(session, "Investor");
+  // Its own wallet signs these (CIP-0103 prepareExecute); the server never
+  // submits as a wallet party.
+  if (actsThroughWallet(session)) throw httpError(409, "This account acts through its wallet: approve it in your wallet");
   const { field, kinds } = INVESTOR_ACTIONS[action];
   const contractId = body[field];
   if (!validId(contractId)) throw httpError(400, "A valid contract ID is required");
@@ -613,13 +616,22 @@ const server = http.createServer(async (req, res) => {
       }));
       return json(res, statuses.every((item) => item.ok) ? 200 : 503, { ok: statuses.every((item) => item.ok), environment, writesEnabled, nodes: statuses }, origin);
     }
-    if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    if (req.method === "POST" && url.pathname === "/api/auth/challenge") {
       requireWriteContext(req, origin, { csrf: false });
       const body = await jsonBody(req);
-      const result = await auth.login(body.username, body.password, req.socket.remoteAddress || "unknown");
+      // Name the site the browser is on, so the wallet shows where it signs in.
+      const result = auth.challenge(body.wallet, new URL(origin).host, req.socket.remoteAddress || "unknown");
       if (result.status === "throttled") return json(res, 429, { error: "Too many sign-in attempts; try again later" }, origin);
-      if (result.status !== "ok") return json(res, 401, { error: "Invalid username or password" }, origin);
-      audit(result.session, "auth.login", null, "ok");
+      if (result.status !== "ok") return json(res, 400, { error: "A wallet party ID is required" }, origin);
+      return json(res, 200, { message: result.message }, origin);
+    }
+    if (req.method === "POST" && url.pathname === "/api/auth/wallet") {
+      requireWriteContext(req, origin, { csrf: false });
+      const body = await jsonBody(req);
+      const result = auth.login(body, req.socket.remoteAddress || "unknown");
+      if (result.status === "throttled") return json(res, 429, { error: "Too many sign-in attempts; try again later" }, origin);
+      if (result.status !== "ok") return json(res, 401, { error: "Wallet sign-in failed: the signature, the challenge or the wallet was not accepted" }, origin);
+      audit(result.session, "auth.wallet", null, "ok");
       return json(res, 200, { user: publicUser(result.session), csrfToken: result.session.csrfToken }, origin,
         { "set-cookie": sessionCookie(result.session.id, auth.sessionMaxAgeSeconds) });
     }

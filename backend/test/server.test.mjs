@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
-import { hashPassword } from "../src/auth.mjs";
+import { generateKeyPairSync, sign } from "node:crypto";
+import { walletNamespace } from "../src/auth.mjs";
 import { damlReason } from "../src/ledger.mjs";
 
 const ORIGIN = "http://127.0.0.1:5173";
@@ -18,7 +19,15 @@ const TREAS = party("treasury");
 const MEMBER = party("member");
 const INV_A = party("investor-a");
 const INV_B = party("investor-b");
-const PASSWORD = "correct horse battery staple";
+// One Ed25519 wallet per account, as a Wallet Gateway would hold it. The
+// wallet party's namespace is the key's fingerprint.
+function makeWallet(hint) {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const raw = Buffer.from(publicKey.export({ format: "jwk" }).x, "base64url").toString("base64");
+  return { party: `${hint}::${walletNamespace(raw)}`, publicKey: raw, sign: (message) => sign(null, Buffer.from(message, "utf8"), privateKey).toString("base64") };
+}
+const WALLETS = Object.fromEntries(["operator", "treasury", "member", "investor-a", "investor-b", "throttle", "self"].map((u) => [u, makeWallet(`${u}-wallet`)]));
+const STRANGER = makeWallet("stranger-wallet");
 const PKG = "#alluvren-v1";
 
 const decmanCalls = [];
@@ -205,16 +214,18 @@ before(async () => {
   p2 = decman("p2");
   ledgerServer = ledgerMock();
   const [p1Port, p2Port, ledgerPort] = [await listen(p1), await listen(p2), await listen(ledgerServer)];
-  const hash = await hashPassword(PASSWORD);
   const dir = mkdtempSync(join(tmpdir(), "alluvren-test-"));
   const accountsFile = join(dir, "accounts.json");
+  const w = (u) => WALLETS[u].party;
   writeFileSync(accountsFile, JSON.stringify({ users: [
-    { username: "operator", passwordHash: hash, party: OPERATOR, roles: ["Operator"] },
-    { username: "treasury", passwordHash: hash, party: TREAS, roles: ["TreasuryReviewer"] },
-    { username: "member", passwordHash: hash, party: MEMBER, roles: ["GovernanceMember"], decmanNode: "p2" },
-    { username: "investor-a", passwordHash: hash, party: INV_A, roles: ["Investor"] },
-    { username: "investor-b", passwordHash: hash, party: INV_B, roles: ["Investor"] },
-    { username: "throttle", passwordHash: hash, party: INV_B, roles: ["Investor"] },
+    { username: "operator", wallet: w("operator"), party: OPERATOR, roles: ["Operator"] },
+    { username: "treasury", wallet: w("treasury"), party: TREAS, roles: ["TreasuryReviewer"] },
+    { username: "member", wallet: w("member"), party: MEMBER, roles: ["GovernanceMember"], decmanNode: "p2" },
+    { username: "investor-a", wallet: w("investor-a"), party: INV_A, roles: ["Investor"] },
+    { username: "investor-b", wallet: w("investor-b"), party: INV_B, roles: ["Investor"] },
+    { username: "throttle", wallet: w("throttle"), party: INV_B, roles: ["Investor"] },
+    // An investor whose ledger party is its own wallet: it acts only through the wallet.
+    { username: "self", wallet: w("self"), party: w("self"), roles: ["Investor"] },
   ] }));
   const env = {
     ALLOWED_ORIGINS: ORIGIN,
@@ -239,12 +250,28 @@ after(async () => {
   await Promise.all([close(p1), close(p2), close(ledgerServer)]);
 });
 
-async function login(username, base = apiBase) {
-  const response = await fetch(`${base}/api/auth/login`, {
+function postJson(path, body, { origin = ORIGIN, base = apiBase } = {}) {
+  return fetch(`${base}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json", origin: ORIGIN },
-    body: JSON.stringify({ username, password: PASSWORD }),
+    headers: { "content-type": "application/json", ...(origin ? { origin } : {}) },
+    body: JSON.stringify(body),
   });
+}
+
+async function challengeFor(wallet, base = apiBase) {
+  const response = await postJson("/api/auth/challenge", { wallet }, { base });
+  assert.equal(response.status, 200, "challenge");
+  return (await response.json()).message;
+}
+
+// Sign in as a wallet signs in: fetch a challenge, sign it, send it back.
+async function walletSignIn(wallet, { base = apiBase, signer = wallet, publicKey = signer.publicKey, tamper = (m) => m } = {}) {
+  const message = await challengeFor(wallet.party, base);
+  return postJson("/api/auth/wallet", { wallet: wallet.party, publicKey, signature: signer.sign(tamper(message)), message }, { base });
+}
+
+async function login(username, base = apiBase) {
+  const response = await walletSignIn(WALLETS[username], { base });
   assert.equal(response.status, 200, `login ${username}`);
   const cookie = response.headers.get("set-cookie").split(";")[0];
   const { csrfToken, user } = await response.json();
@@ -268,46 +295,57 @@ function get(session, path) {
   return fetch(`${session.base}${path}`, { headers: { cookie: session.cookie } });
 }
 
-test("login issues an HttpOnly SameSite=Strict session and rejects bad credentials generically", async () => {
-  const bad = await fetch(`${apiBase}/api/auth/login`, {
-    method: "POST", headers: { "content-type": "application/json", origin: ORIGIN },
-    body: JSON.stringify({ username: "treasury", password: "wrong" }),
-  });
-  assert.equal(bad.status, 401);
-  assert.deepEqual(await bad.json(), { error: "Invalid username or password" });
-  const unknown = await fetch(`${apiBase}/api/auth/login`, {
-    method: "POST", headers: { "content-type": "application/json", origin: ORIGIN },
-    body: JSON.stringify({ username: "nobody", password: "wrong" }),
-  });
-  assert.deepEqual(await unknown.json(), { error: "Invalid username or password" });
-  const noOrigin = await fetch(`${apiBase}/api/auth/login`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "treasury", password: PASSWORD }),
-  });
-  assert.equal(noOrigin.status, 403);
-
-  const ok = await fetch(`${apiBase}/api/auth/login`, {
-    method: "POST", headers: { "content-type": "application/json", origin: ORIGIN },
-    body: JSON.stringify({ username: "treasury", password: PASSWORD }),
-  });
+test("wallet sign-in issues an HttpOnly SameSite=Strict session for the bound account", async () => {
+  const message = await challengeFor(WALLETS.treasury.party);
+  assert.match(message, /^Sign in to Alluvren at 127\.0\.0\.1:5173\nWallet: treasury-wallet::1220[0-9a-f]{64}\nNonce: [0-9a-f]{32}\nExpires: \d{4}-/);
+  const ok = await postJson("/api/auth/wallet", { wallet: WALLETS.treasury.party, publicKey: WALLETS.treasury.publicKey, signature: WALLETS.treasury.sign(message), message });
+  assert.equal(ok.status, 200);
   const cookie = ok.headers.get("set-cookie");
   assert.match(cookie, /HttpOnly/);
   assert.match(cookie, /SameSite=Strict/);
   assert.match(cookie, /Path=\//);
   const payload = await ok.json();
-  assert.deepEqual(payload.user, { username: "treasury", party: TREAS, roles: ["TreasuryReviewer"] });
-  assert.equal(JSON.stringify(payload).includes("passwordHash"), false);
+  assert.deepEqual(payload.user, { username: "treasury", wallet: WALLETS.treasury.party, party: TREAS, roles: ["TreasuryReviewer"], actsThroughWallet: false });
+  // A challenge works once, whatever the outcome.
+  const replay = await postJson("/api/auth/wallet", { wallet: WALLETS.treasury.party, publicKey: WALLETS.treasury.publicKey, signature: WALLETS.treasury.sign(message), message });
+  assert.equal(replay.status, 401);
 });
 
-test("repeated failed sign-ins are throttled", async () => {
+test("wallet sign-in refuses a key that does not own the wallet, a forged signature and unbound wallets, with one generic error", async () => {
+  const generic = { error: "Wallet sign-in failed: the signature, the challenge or the wallet was not accepted" };
+  // The stranger signs correctly with its own key, but the key is not the wallet's.
+  const wrongKey = await walletSignIn(WALLETS["investor-a"], { signer: STRANGER });
+  assert.equal(wrongKey.status, 401);
+  assert.deepEqual(await wrongKey.json(), generic);
+  // The wallet's public key, with a signature by another key.
+  const forged = await walletSignIn(WALLETS["investor-a"], { signer: STRANGER, publicKey: WALLETS["investor-a"].publicKey });
+  assert.equal(forged.status, 401);
+  // A signature over different text than the challenge.
+  const otherText = await walletSignIn(WALLETS["investor-a"], { tamper: (m) => m.replace("Alluvren", "Elsewhere") });
+  assert.equal(otherText.status, 401);
+  // A well-formed wallet that no account is bound to.
+  const unbound = await walletSignIn(STRANGER);
+  assert.equal(unbound.status, 401);
+  assert.deepEqual(await unbound.json(), generic);
+  // A challenge is only issued to well-formed wallet parties, from an allowed origin.
+  assert.equal((await postJson("/api/auth/challenge", { wallet: "not-a-party" })).status, 400);
+  assert.equal((await postJson("/api/auth/challenge", { wallet: WALLETS.treasury.party }, { origin: null })).status, 403);
+  // The removed password route no longer signs anyone in.
+  assert.notEqual((await postJson("/api/auth/login", { username: "treasury", password: "x" })).status, 200);
+});
+
+test("repeated failed wallet sign-ins are throttled", async () => {
   let last;
-  for (let i = 0; i < 6; i++) {
-    last = await fetch(`${apiBase}/api/auth/login`, {
-      method: "POST", headers: { "content-type": "application/json", origin: ORIGIN },
-      body: JSON.stringify({ username: "throttle", password: "wrong" }),
-    });
-  }
+  for (let i = 0; i < 6; i++) last = await walletSignIn(WALLETS.throttle, { signer: STRANGER, publicKey: WALLETS.throttle.publicKey });
   assert.equal(last.status, 429);
+});
+
+test("an investor whose party is its own wallet acts only through the wallet", async () => {
+  const self = await login("self");
+  assert.equal(self.user.actsThroughWallet, true);
+  const response = await post(self, "/api/claims/acknowledge", { entitlementCid: "ent-1" });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /acts through its wallet/);
 });
 
 test("workflow requires a staff session; investors are refused", async () => {

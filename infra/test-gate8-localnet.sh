@@ -78,7 +78,7 @@ echo "policy=$POLICY_CID batch=$BATCH"
 
 
 # --- throwaway accounts and the real backend ------------------------------
-say 'Start the backend with throwaway accounts (passwords never printed)'
+say 'Start the backend with throwaway wallet accounts (keys never printed)'
 # The operator account is the batch proposer; each governance account is bound
 # to the member hosted on its DecMan node.
 backend_start "$(jq -cn --arg op "$OP" --arg m1 "$MEMBER_1" --arg m2 "$MEMBER_2" --arg t "$TREAS" --arg coo "$COO" --arg comp "$COMP" --arg inv "$INV" '
@@ -96,9 +96,10 @@ pass "backend healthy on loopback, writes enabled, nodes: $(echo "$HEALTH" | jq 
 
 say 'Sign in as every role'
 for u in operator treasury coo compliance member-1 member-2 investor; do login "$u"; done
-BAD=$(printf '%s' '{"username":"treasury","password":"not-the-password"}' | curl -sS -H "Origin: $ORIGIN" -H 'Content-Type: application/json' -w '\n%{http_code}' -d @- "$API/api/auth/login")
-expect "$BAD" 401 'wrong password'
-pass 'all seven accounts signed in; wrong password refused'
+# The compliance key signs a valid challenge for the treasury wallet: the key
+# does not own that wallet, so the backend refuses it.
+expect "$(wallet_signin treasury compliance)" 401 'a key that does not own the wallet'
+pass 'all seven accounts signed in with their wallets; a key that does not own the wallet was refused'
 
 say 'Requirements shown to staff; investors refused the batch list'
 R=$(get treasury /api/workflow); expect "$R" 200 'treasury workflow'
